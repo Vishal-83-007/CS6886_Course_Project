@@ -1,0 +1,8 @@
+results/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+*.npz
+*.npy
+brian_debug*.log
+.brian_cache/
