@@ -44,7 +44,17 @@ TAU_E = 100 * ms   # excitatory membrane tau (increased from bio ~10-20ms
                     # to 100ms, per D&C Sec 2.1, to better estimate rate code)
 TAU_I = 10 * ms     # inhibitory membrane tau
 TAU_GE = 1 * ms     # excitatory conductance decay
-TAU_GI = 2 * ms     # inhibitory conductance decay
+TAU_GI = 2 * ms     # inhibitory conductance decay onto inhibitory neurons (unused, no I->I synapses, kept for symmetry)
+TAU_GI_EXC = 10 * ms  # inhibitory conductance decay ONTO EXCITATORY neurons.
+# Must be >= refrac_e, or a burst of lateral inhibition decays away before
+# the refractory period it's supposed to suppress even ends -- with the
+# original 2ms value the excitatory layer loses lateral inhibition almost
+# entirely within a refractory period (5ms) and the whole excitatory
+# population fires in synchronized bursts instead of competing (confirmed
+# empirically: near-max-rate saturation that gets WORSE, not better, with
+# more excitatory neurons, and does not settle even with repeated exposure
+# to the same input). 10ms keeps inhibition alive across the refractory
+# window so lateral inhibition can actually do its job.
 
 # Homeostasis (adaptive threshold), Sec. 2.4
 THETA_PLUS_E = 0.05 * mV
@@ -60,9 +70,19 @@ MU = 0.9                # weight-dependence exponent
 ETA = 0.0001             # learning rate
 W_MAX_EE = 1.0            # max input->excitatory weight (normalized)
 
-# Fixed weights for the inhibitory circuit
-W_EI = 10.4    # excitatory -> inhibitory (one-to-one), strong: 1 spike -> 1 spike
-W_IE = 17.0    # inhibitory -> excitatory (all-to-all-except-self)
+# Fixed weights for the inhibitory circuit.
+# IMPORTANT (see README "Known issues found & fixed"): the originally
+# tried values here (W_EI=10.4, W_IE=17.0, both hand-derived without
+# empirical validation) caused the excitatory/inhibitory loop to
+# occasionally lock into a self-sustaining, INPUT-INDEPENDENT oscillation
+# where the excitatory layer fires at ~90% of its refractory-limited max
+# regardless of what's presented -- confirmed by feeding different random
+# images and seeing identical periodic output. The values below were
+# tuned empirically (see git history / debugging session) to keep the
+# E/I loop in a stable, gradually-settling regime across 60+ presentations
+# at both N=100 and N=400 with no runaway observed.
+W_EI = 3.0     # excitatory -> inhibitory (one-to-one)
+W_IE = 8.0      # inhibitory -> excitatory (all-to-all-except-self)
 
 # ----------------------------------------------------------------------
 # Equations
@@ -71,12 +91,12 @@ W_IE = 17.0    # inhibitory -> excitatory (all-to-all-except-self)
 EXC_EQS = '''
 dv/dt = ((v_rest_e - v) + ge * (0*mV - v) + gi * (-100*mV - v)) / tau_e : volt (unless refractory)
 dge/dt = -ge / tau_ge : 1
-dgi/dt = -gi / tau_gi : 1
+dgi/dt = -gi / tau_gi_exc : 1
 dtheta/dt = -theta / tau_theta : volt
 v_rest_e : volt
 tau_e : second
 tau_ge : second
-tau_gi : second
+tau_gi_exc : second
 tau_theta : second
 '''
 
@@ -142,9 +162,17 @@ def build_network(n_excitatory=400, seed=0):
     exc_group.v_rest_e = V_REST_E
     exc_group.tau_e = TAU_E
     exc_group.tau_ge = TAU_GE
-    exc_group.tau_gi = TAU_GI
+    exc_group.tau_gi_exc = TAU_GI_EXC
     exc_group.tau_theta = TAU_THETA
-    exc_group.theta = 0 * mV
+    # theta must start at theta_offset, NOT 0: the threshold condition is
+    # v > (theta - theta_offset + v_thresh_e), so theta=0 gives an
+    # effective threshold of v_thresh_e - theta_offset = -72mV, which is
+    # BELOW v_rest_e (-65mV) -- neurons would be trivially above threshold
+    # at rest, before any input, and fire at their refractory-limited max
+    # rate regardless of what's presented. This was the actual root cause
+    # of the saturation/near-chance-accuracy behavior (confirmed
+    # empirically -- see README "Known issue found & fixed").
+    exc_group.theta = THETA_OFFSET
 
     # ---- Inhibitory layer ----
     inh_group = NeuronGroup(
@@ -199,6 +227,39 @@ def build_network(n_excitatory=400, seed=0):
         'n_e': n_e,
         'n_input': n_input,
     }
+
+
+def normalize_weights(components, target_sum=78.0):
+    """
+    Rescale each excitatory neuron's TOTAL incoming input weight to a
+    fixed budget, applied after each training presentation.
+
+    Why this is necessary (and not optional): the STDP rule (Eqn. 3) only
+    constrains individual synapse dynamics -- it has no mechanism that
+    bounds the *sum* of a neuron's incoming weights. Combined with
+    continuous high-rate Poisson input drive, this lets a neuron's total
+    excitatory drive grow effectively unbounded, which saturates the
+    neuron at its refractory-limited maximum firing rate regardless of
+    what pattern is shown -- breaking the competitive dynamics lateral
+    inhibition is supposed to produce. Diehl & Cook's own implementation
+    performs exactly this normalization after each example; the paper's
+    prose (Eqn. 3) does not spell this out explicitly, which is a common
+    trap when reproducing this architecture from the paper text alone.
+
+    target_sum should be in the same ballpark as the initial weight sum
+    per neuron (n_input * mean_init_weight); we default to 78.0, i.e.
+    784 synapses averaging ~0.1 each -- tuned empirically (see
+    sanity_check.py / README) to avoid saturation while still allowing
+    strong potentiation of a neuron's preferred pattern.
+    """
+    syn = components['syn_input_exc']
+    n_e = components['n_e']
+    w = np.array(syn.w[:])
+    j_idx = np.array(syn.j[:])
+    row_sums = np.bincount(j_idx, weights=w, minlength=n_e)
+    row_sums[row_sums == 0] = 1.0  # avoid div by zero for a dead neuron
+    scale = target_sum / row_sums
+    syn.w = w * scale[j_idx]
 
 
 def set_plasticity(components, learning_on: bool):

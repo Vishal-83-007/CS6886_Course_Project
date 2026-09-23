@@ -33,7 +33,7 @@ from src.utils import plot_receptive_fields, save_weights
 # ---------------------------------------------------------------------
 # Config -- edit these
 # ---------------------------------------------------------------------
-N_EXCITATORY = 400
+N_EXCITATORY = 100
 N_TRAIN = 1000          # balanced across 10 classes (N_TRAIN/10 per class)
 N_ASSIGN = 500           # subset used for post-hoc neuron->label assignment
 N_TEST = 500             # subset of the MNIST test set used for accuracy
