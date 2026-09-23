@@ -24,8 +24,8 @@ Diehl & Cook STDP.
 
 import numpy as np
 from brian2 import (
-    NeuronGroup, Synapses, ms, mV, Hz, second,
-    Network, defaultclock
+    NeuronGroup, Synapses, SpikeMonitor, ms, mV, Hz, second,
+    Network, defaultclock, seed as brian_seed
 )
 
 # ----------------------------------------------------------------------
@@ -49,7 +49,8 @@ TAU_GI = 2 * ms     # inhibitory conductance decay
 # Homeostasis (adaptive threshold), Sec. 2.4
 THETA_PLUS_E = 0.05 * mV
 TAU_THETA = 1e7 * ms     # very slow decay -> near-permanent within a run
-THETA_OFFSET = 20 * mV   # offset term in threshold: v > (theta - offset + v_thresh_e)
+THETA_OFFSET = 20 * mV
+EXC_SPIKE_INTERVAL = 50 * ms  # 5 ms voltage clamp, 50 ms spike exclusion
 
 # ----------------------------------------------------------------------
 # STDP parameters (Diehl & Cook Eqn. 3)
@@ -72,7 +73,9 @@ EXC_EQS = '''
 dv/dt = ((v_rest_e - v) + ge * (0*mV - v) + gi * (-100*mV - v)) / tau_e : volt (unless refractory)
 dge/dt = -ge / tau_ge : 1
 dgi/dt = -gi / tau_gi : 1
-dtheta/dt = -theta / tau_theta : volt
+dtheta/dt = -theta * plasticity_enabled / tau_theta : volt
+dtimer/dt = 1 : second
+plasticity_enabled : 1 (shared)
 v_rest_e : volt
 tau_e : second
 tau_ge : second
@@ -119,6 +122,7 @@ def build_network(n_excitatory=400, seed=0):
     out weights, etc.).
     """
     rng = np.random.default_rng(seed)
+    brian_seed(seed)  # Also seed Brian's Poisson spikes and synaptic randomness.
     n_input = 28 * 28
     n_e = n_excitatory
     n_i = n_excitatory
@@ -131,12 +135,14 @@ def build_network(n_excitatory=400, seed=0):
 
     # ---- Excitatory layer ----
     exc_group = NeuronGroup(
-        n_e, EXC_EQS, threshold='v > (theta - theta_offset + v_thresh_e)',
-        refractory='refrac_e', reset='v = v_reset_e; theta += theta_plus_e',
+        n_e, EXC_EQS,
+        threshold='v > (theta - theta_offset + v_thresh_e) and timer > spike_interval',
+        refractory='refrac_e',
+        reset='v = v_reset_e; theta += theta_plus_e * plasticity_enabled; timer = 0*ms',
         method='euler', name='excitatory',
         namespace={'v_thresh_e': V_THRESH_E, 'v_reset_e': V_RESET_E,
                    'theta_offset': THETA_OFFSET, 'theta_plus_e': THETA_PLUS_E,
-                   'refrac_e': REFRAC_E}
+                   'refrac_e': REFRAC_E, 'spike_interval': EXC_SPIKE_INTERVAL}
     )
     exc_group.v = V_REST_E - 40 * mV
     exc_group.v_rest_e = V_REST_E
@@ -144,7 +150,9 @@ def build_network(n_excitatory=400, seed=0):
     exc_group.tau_ge = TAU_GE
     exc_group.tau_gi = TAU_GI
     exc_group.tau_theta = TAU_THETA
-    exc_group.theta = 0 * mV
+    exc_group.theta = 20 * mV
+    exc_group.timer = EXC_SPIKE_INTERVAL + defaultclock.dt
+    exc_group.plasticity_enabled = 1
 
     # ---- Inhibitory layer ----
     inh_group = NeuronGroup(
@@ -187,6 +195,8 @@ def build_network(n_excitatory=400, seed=0):
 
     net = Network(input_group, exc_group, inh_group,
                    syn_input_exc, syn_exc_inh, syn_inh_exc)
+    exc_monitor = SpikeMonitor(exc_group, record=False, name='exc_count_monitor')
+    net.add(exc_monitor)
 
     return {
         'net': net,
@@ -196,14 +206,17 @@ def build_network(n_excitatory=400, seed=0):
         'syn_input_exc': syn_input_exc,
         'syn_exc_inh': syn_exc_inh,
         'syn_inh_exc': syn_inh_exc,
+        'exc_monitor': exc_monitor,
+        '_learning_on': True,
         'n_e': n_e,
         'n_input': n_input,
     }
 
 
 def set_plasticity(components, learning_on: bool):
-    """Turn STDP on/off by zeroing the learning rate (keeps traces intact,
-    just stops weight change -- used for baseline-frozen test phase, and
-    for the unlearning statistic computation where you need STDP's would-be
-    update WITHOUT applying it -- see src/importance.py)."""
+    """Freeze both synaptic weights and adaptive thresholds for observation."""
+    if components['_learning_on'] == learning_on:
+        return
     components['syn_input_exc'].eta = ETA if learning_on else 0.0
+    components['exc'].plasticity_enabled = int(learning_on)
+    components['_learning_on'] = learning_on

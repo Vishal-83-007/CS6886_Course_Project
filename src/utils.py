@@ -4,6 +4,7 @@ of the ASP paper."""
 
 import numpy as np
 import matplotlib.pyplot as plt
+from brian2 import volt
 
 
 def get_weight_matrix(components):
@@ -35,17 +36,23 @@ def plot_receptive_fields(components, save_path=None, max_neurons=100):
 
 
 def save_weights(components, path):
-    """Save raw synapse weights + connectivity indices for later reload
-    (needed so the unlearning stage can start from the trained baseline
-    without retraining)."""
+    """Save the learned weights and thresholds needed for frozen inference."""
     syn = components['syn_input_exc']
     np.savez(path, w=np.array(syn.w[:]), i=np.array(syn.i[:]), j=np.array(syn.j[:]),
+              theta_volts=np.array(components['exc'].theta[:] / volt),
               n_e=components['n_e'], n_input=components['n_input'])
 
 
 def load_weights(components, path):
-    data = np.load(path)
-    syn = components['syn_input_exc']
-    # assumes same connectivity ordering (all-to-all, built the same way)
-    syn.w = data['w']
+    with np.load(path) as data:
+        syn = components['syn_input_exc']
+        if 'theta_volts' not in data:
+            raise ValueError('Checkpoint predates threshold saving; retrain the baseline')
+        if (int(data['n_e']) != components['n_e'] or
+                int(data['n_input']) != components['n_input'] or
+                not np.array_equal(data['i'], syn.i[:]) or
+                not np.array_equal(data['j'], syn.j[:])):
+            raise ValueError('Checkpoint connectivity does not match this network')
+        syn.w = data['w']
+        components['exc'].theta = data['theta_volts'] * volt
     return components

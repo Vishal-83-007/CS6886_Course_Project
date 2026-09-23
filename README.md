@@ -78,40 +78,41 @@ snn-unlearning/
 1. Create a new Kaggle Notebook, **enable internet** (Settings → Internet: On)
 2. Upload this repo (or `git clone` it in a cell if the repo is public)
 3. `!pip install -q -r requirements.txt`
-4. Edit the config block at the top of `run_baseline.py` for your time budget
-   (see below), then `!python run_baseline.py`
+4. Run a short timing pilot, then choose a training count for your CPU:
+
+   ```bash
+   python run_baseline.py --n-train 1000 --n-assign 200 --n-test 200 --out-dir results/pilot
+   python run_baseline.py --n-train 30000 --n-assign 2000 --n-test 1000 --out-dir results/baseline_seed0
+   ```
+
+   Run `python run_baseline.py --help` for all options. Use separate output
+   directories for each seed.
 
 No GPU needed or used — see "CPU vs GPU" below.
 
-### Time budget presets
+### Time budget
 
-| Preset | N_EXCITATORY | N_TRAIN | Expected runtime (CPU) | Expected accuracy |
-|---|---|---|---|---|
-| Quick demo (proposal) | 100 | 1000 | ~20–30 min | ~70–80% |
-| Stronger baseline | 400 | 3000 | ~70–90 min | ~85–88% |
-| Paper-scale | 6400 | 60000 | many hours | ~95% |
-
-These accuracy figures are extrapolated from Diehl & Cook's published
-scaling curve (Fig. 2B: 82.9% @ 100 neurons w/ 40k examples, up to 95.0%
-@ 6400 neurons w/ 900k example-presentations) — actual numbers from our
-implementation will differ somewhat and should be reported as measured,
-not assumed.
+The default is 400 neurons, 30,000 training presentations, 2,000 label
+assignment presentations, and 1,000 test presentations. This is a budget
+starting point, not a promised accuracy. Diehl & Cook reported 87% for
+400 neurons after 180,000 presentations (three full MNIST passes). A
+30,000-image run can be substantially worse. For a 24-hour allocation,
+measure a 1,000-image pilot on the target CPU and estimate roughly
+`(N_TRAIN + N_ASSIGN + N_TEST) * measured_seconds_per_image`, allowing
+extra time for setup, retries, plotting, and changing spike activity.
+If the estimate exceeds your budget, reduce the sample counts.
 
 ## CPU vs GPU
 
-**Everything here runs on CPU only, by design — no CUDA/GPU dependency
-anywhere in this repo.** Brian2's default backends are a Python/numpy
-runtime and a Cython-compiled C++ backend (`requirements.txt` includes
-`cython` so Brian2 auto-selects the faster compiled backend when a C
-compiler is available, falling back to pure numpy otherwise — either way
-it runs on any machine with no extra setup).
+**This version runs on CPU.** The training script selects Brian2's compiled
+Cython backend by default, so install a C++ compiler as well as the Python
+dependencies. If compilation fails, fix the compiler setup before a long run;
+`--backend numpy` is available for debugging but will generally be slower.
+Check the measured throughput on your target CPU.
 
-SNN + STDP simulation is inherently sequential in time and event-driven
-(sparse, irregular spikes) — it does not parallelize onto GPU the way
-dense-matrix deep learning does. This is why both source papers used
-Brian2 on CPU. A GPU backend (Brian2CUDA) technically exists but requires
-CUDA toolkit setup and is far less maintained; using it would risk the
-repo breaking on a grader's machine, so it's intentionally not used here.
+Brian2CUDA exists, but the per-image retry and immediate spike-count decision
+in this script would require a larger refactor to use it efficiently. CPU
+profiling is the first step; GPU work is outside this branch's scope.
 
 ## Validation performed
 
@@ -119,10 +120,12 @@ Before handing off this code, the full pipeline (encoding → network →
 STDP → homeostasis → label assignment → evaluation) was validated on a
 synthetic 3-class task (`sanity_check.py`) — three distinct 28×28 spatial
 patterns with Gaussian noise — since this development environment has no
-internet access to download real MNIST. Result: **97.8% test accuracy**
-(chance = 33.3%), with neuron labels distributed roughly evenly across
-the three classes. This confirms the pipeline is functionally correct
-end-to-end. Run `python sanity_check.py` yourself to reproduce (~1 min).
+internet access to download real MNIST. With the corrected threshold and
+frozen evaluation path, this check scored **95.6% test accuracy**
+(chance = 33.3%). It is only a pipeline check, not an estimate of MNIST
+performance. Run `python sanity_check.py` to repeat it in your environment;
+`python -m unittest test_baseline.py` checks frozen evaluation and checkpoint
+reload.
 
 **Real MNIST accuracy has not yet been measured** — that requires
 running `run_baseline.py` on Kaggle (or any machine with internet). Do
@@ -131,10 +134,12 @@ Diehl & Cook paper's numbers as if they were yours.
 
 ## Outputs (saved to `results/` or `/kaggle/working/`)
 
-- `baseline_weights.npz` — trained input→excitatory weights (this is the
-  checkpoint Phase 2 unlearning will load)
+- `baseline_weights.npz` — trained input→excitatory weights and adaptive
+  thresholds (the checkpoint Phase 2 unlearning will load)
 - `neuron_labels.npy` — class assigned to each excitatory neuron
-- `baseline_accuracy.txt` — measured test accuracy + config used
+- `per_class_spike_rates.npy` — mean assignment-set spike counts per class
+- `confusion_matrix.npy` / `.png` — measured test confusion matrix
+- `baseline_accuracy.txt` — measured accuracy, configuration, and stage times
 - `receptive_fields.png` — visualization of learned digit prototypes
   (should look like Fig. 2A of Diehl & Cook / Fig. 4 of ASP once trained
   on real MNIST)

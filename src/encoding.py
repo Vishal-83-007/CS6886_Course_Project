@@ -13,6 +13,8 @@ example is re-presented (same procedure as the paper).
 import numpy as np
 from brian2 import Hz, ms
 
+from .network import set_plasticity
+
 MAX_RATE_HZ = 63.75
 PRESENT_TIME = 350 * ms
 REST_TIME = 150 * ms
@@ -35,35 +37,27 @@ def present_example(components, image_flat_0_255, learning_on=True,
     Returns: exc_spike_counts (n_e,) array of spikes fired during the
     (possibly boosted) successful presentation.
     """
-    from brian2 import SpikeMonitor
-
     net = components['net']
     input_group = components['input']
-    exc_group = components['exc']
-
-    mon = SpikeMonitor(exc_group, name='tmp_exc_mon')
-    net.add(mon)
+    mon = components['exc_monitor']
+    set_plasticity(components, learning_on)
 
     rate_scale = 1.0
-    counts = np.zeros(components['n_e'])
     try:
         for attempt in range(max_rate_scale_tries):
             input_group.rates = image_to_rates(image_flat_0_255, rate_scale)
-            n_before = mon.num_spikes
+            before = mon.count[:]
             net.run(PRESENT_TIME)
-            n_after = mon.num_spikes
-            spikes_this_run = n_after - n_before
+            counts = mon.count[:] - before
+            spikes_this_run = int(counts.sum())
+
+            input_group.rates = 0 * Hz
+            net.run(REST_TIME)
 
             if spikes_this_run >= MIN_SPIKES:
-                counts = np.bincount(mon.i[-spikes_this_run:] if spikes_this_run else [],
-                                      minlength=components['n_e']).astype(float)
                 break
-            else:
-                rate_scale = rate_scale + RATE_BOOST_HZ / MAX_RATE_HZ
-        # rest period
-        input_group.rates = 0 * Hz
-        net.run(REST_TIME)
+            rate_scale += RATE_BOOST_HZ / MAX_RATE_HZ
     finally:
-        net.remove(mon)
+        input_group.rates = 0 * Hz
 
     return counts
