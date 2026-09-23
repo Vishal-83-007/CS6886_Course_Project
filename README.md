@@ -1,5 +1,5 @@
 # Machine Unlearning using SNNs
-
+something is something
 Course project: importance-based machine unlearning on a Spiking Neural
 Network trained for MNIST digit recognition. This repo currently
 implements **Phase 1: the baseline SNN**, trained with standard STDP.
