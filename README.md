@@ -1,5 +1,11 @@
 # Machine Unlearning using SNNs
 
+For the Fashion-MNIST/Aqua workflow, start with
+[FASHION_AQUA_RUNBOOK.md](FASHION_AQUA_RUNBOOK.md). It documents the new
+`run_fashion.py` runner, reproducible baseline/Gold splits, CPU checkpoint/resume,
+compiled CPU execution, and bounded CUDA pilots. The older MNIST instructions
+below describe `run_baseline.py` and remain separate.
+
 Course project: importance-based machine unlearning on a Spiking Neural
 Network trained for MNIST digit recognition. This repo currently
 implements **Phase 1: the baseline SNN**, trained with standard STDP.

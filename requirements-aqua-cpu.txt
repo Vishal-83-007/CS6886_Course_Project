@@ -1,0 +1,10 @@
+# Python 3.10–3.12; install into a dedicated environment, not system Python.
+brian2==2.9.0
+numpy==1.26.4
+cython==3.0.12
+scipy==1.15.3
+matplotlib==3.9.4
+tqdm==4.67.1
+setuptools==79.0.1
+# Recent Pillow wheels require newer glibc than older Aqua nodes may have.
+pillow==10.4.0

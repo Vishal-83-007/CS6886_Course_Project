@@ -131,7 +131,7 @@ def build_network(n_excitatory=400, seed=0):
 
     # ---- Input layer: Poisson spike generators (rates set per-example) ----
     from brian2 import PoissonGroup
-    input_group = PoissonGroup(n_input, rates=0 * Hz)
+    input_group = PoissonGroup(n_input, rates=0 * Hz, name='fashion_input')
 
     # ---- Excitatory layer ----
     exc_group = NeuronGroup(
@@ -174,7 +174,7 @@ def build_network(n_excitatory=400, seed=0):
         method='euler', name='input_to_exc'
     )
     syn_input_exc.connect()  # all-to-all
-    syn_input_exc.w = rng.uniform(0.0, 0.3, size=len(syn_input_exc.w))
+    syn_input_exc.w = rng.uniform(0.0, 0.3, size=n_input * n_e)
     syn_input_exc.tau_tr = TC_PRE
     syn_input_exc.x_tar = X_TAR
     syn_input_exc.mu = MU
@@ -194,7 +194,7 @@ def build_network(n_excitatory=400, seed=0):
     syn_inh_exc.w = W_IE
 
     net = Network(input_group, exc_group, inh_group,
-                   syn_input_exc, syn_exc_inh, syn_inh_exc)
+                   syn_input_exc, syn_exc_inh, syn_inh_exc, name='fashion_network')
     exc_monitor = SpikeMonitor(exc_group, record=False, name='exc_count_monitor')
     net.add(exc_monitor)
 

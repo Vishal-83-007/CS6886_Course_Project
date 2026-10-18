@@ -60,4 +60,6 @@ def present_example(components, image_flat_0_255, learning_on=True,
     finally:
         input_group.rates = 0 * Hz
 
+    components['_last_attempts'] = attempt + 1
+    components['_last_retry_exhausted'] = spikes_this_run < MIN_SPIKES
     return counts

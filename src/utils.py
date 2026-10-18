@@ -38,6 +38,9 @@ def plot_receptive_fields(components, save_path=None, max_neurons=100):
 def save_weights(components, path):
     """Save the learned weights and thresholds needed for frozen inference."""
     syn = components['syn_input_exc']
+    if (not np.isfinite(syn.w[:]).all() or
+            not np.isfinite(components['exc'].theta[:] / volt).all()):
+        raise FloatingPointError('Nonfinite weights/thresholds: refusing invalid checkpoint')
     np.savez(path, w=np.array(syn.w[:]), i=np.array(syn.i[:]), j=np.array(syn.j[:]),
               theta_volts=np.array(components['exc'].theta[:] / volt),
               n_e=components['n_e'], n_input=components['n_input'])
