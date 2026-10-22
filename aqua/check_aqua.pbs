@@ -1,0 +1,10 @@
+#!/bin/bash
+# Compute-node diagnostic. Submit from the repo root:  qsub aqua/check_aqua.pbs
+#PBS -N aqua_check
+#PBS -j oe
+#PBS -q small20
+#PBS -l select=1:ncpus=1
+#PBS -l walltime=00:45:00
+
+cd "$PBS_O_WORKDIR" || exit 1
+bash aqua/check_aqua.sh > "aqua_check_compute_${PBS_JOBID%%.*}.log" 2>&1

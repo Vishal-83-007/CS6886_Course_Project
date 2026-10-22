@@ -6,3 +6,13 @@ __pycache__/
 *.npy
 brian_debug*.log
 .brian_cache/
+data/
+wheelhouse/
+aqua_offline_setup_*.tar.gz
+cython_cache/
+*.o[0-9]*
+*.e[0-9]*
+aqua_diagnostics/
+aqua_runs/
+proposal_final_report.pdf
+

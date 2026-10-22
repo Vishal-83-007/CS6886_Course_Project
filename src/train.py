@@ -1,49 +1,35 @@
 """
-Training loop -- faithful to the original main loop's structure:
-    normalize_weights() is called once per presentation, BEFORE setting
-    that presentation's input rates (source: the `else: normalize_weights()`
-    branch right before `rates = ...` in the main while-loop, active
-    whenever not in test_mode).
+Training loop for the Diehl & Cook baseline SNN.
 
-Neuron -> class label assignment matches get_new_assignments(): for each
-neuron, across the examples shown, take the class with the highest
-average firing rate (source uses argmax-by-comparison; same result as
-np.argmax over the per-class average rate matrix).
+Procedure (Diehl & Cook Sec. 2.6):
+    1. Present training examples one at a time with STDP active.
+    2. After training, freeze weights (STDP off).
+    3. Assign each excitatory neuron the class it responded to most
+       strongly on average, over one pass of (a subset of) the training
+       set -- this is the ONLY place labels are used.
 """
 
 import numpy as np
 from tqdm import tqdm
 
 from .encoding import present_example
-from .network import normalize_weights
 
 
-def train(components, X_train, y_train, verbose=True, weight_norm_target=78.0):
+def train(components, X_train, y_train, verbose=True):
+    """Run unsupervised STDP training over X_train. Labels are NOT used here."""
     n = len(X_train)
-    n_e = components['n_e']
-    max_possible = n_e * 70
-    consecutive_saturated = 0
-
     iterator = tqdm(range(n), desc='training') if verbose else range(n)
     for idx in iterator:
-        if weight_norm_target is not None:
-            normalize_weights(components, target_sum=weight_norm_target)
-        counts = present_example(components, X_train[idx], learning_on=True)
-
-        frac_saturated = counts.sum() / max_possible
-        if frac_saturated > 0.5:
-            consecutive_saturated += 1
-        else:
-            consecutive_saturated = 0
-        if consecutive_saturated == 3:
-            print(f"\n[WARNING] Excitatory layer >50% of max firing rate for "
-                  f"3 consecutive presentations (example {idx}). See README "
-                  f"'Known issues' -- training beyond this point may not be "
-                  f"learning anything useful.\n")
+        present_example(components, X_train[idx], learning_on=True)
     return components
 
 
 def assign_labels(components, X_assign, y_assign, verbose=True):
+    """
+    Run examples through the frozen network and record, for each
+    excitatory neuron, its average firing rate per digit class.
+    Returns: neuron_labels (n_e,) -- the class each neuron is assigned to.
+    """
     n_e = components['n_e']
     rate_sums = np.zeros((10, n_e))
     class_counts = np.zeros(10)
@@ -55,7 +41,7 @@ def assign_labels(components, X_assign, y_assign, verbose=True):
         rate_sums[digit] += counts
         class_counts[digit] += 1
 
-    class_counts[class_counts == 0] = 1
-    avg_rates = rate_sums / class_counts[:, None]
-    neuron_labels = np.argmax(avg_rates, axis=0)
+    class_counts[class_counts == 0] = 1  # avoid div by zero
+    avg_rates = rate_sums / class_counts[:, None]     # (10, n_e)
+    neuron_labels = np.argmax(avg_rates, axis=0)       # (n_e,)
     return neuron_labels, avg_rates

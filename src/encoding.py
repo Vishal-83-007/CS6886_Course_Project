@@ -1,82 +1,65 @@
 """
-Input encoding -- faithful port of the main loop in
-Diehl&Cook_spiking_MNIST.py, specifically:
+Poisson rate encoding of MNIST images (Diehl & Cook Sec. 2.5).
 
-    rates = image.reshape(n_input) / 8. * input_intensity
-    input_groups['Xe'].rate = rates
-    b.run(single_example_time)
-    current_spike_count = spike_counters['Ae'].count - previous_spike_count
-    if np.sum(current_spike_count) < 5:
-        input_intensity += 1
-        ... re-run with rate=0 for resting_time, then retry with the
-            same image at the new (higher) input_intensity ...
-    else:
-        ... record result, proceed to next image ...
-        input_intensity = start_input_intensity   # reset to 2. for next image
+Pixel intensity (0-255) -> firing rate (0-63.75 Hz), i.e. intensity / 4.
+Each example is presented for PRESENT_TIME, followed by REST_TIME of
+zero input to let membrane/conductance variables relax.
 
-NOT the paper prose's "+32 Hz" boost -- that was this project's earlier
-paper-text-based guess. The actual code scales the WHOLE rate vector by
-a multiplicative `input_intensity` factor (starting at 2.0, +1 per
-retry), applied on top of the fixed `pixel / 8` base rate.
+If the excitatory layer fires fewer than MIN_SPIKES total during the
+presentation, the input rates are boosted by RATE_BOOST and the SAME
+example is re-presented (same procedure as the paper).
 """
 
 import numpy as np
-from brian2 import Hz, ms, second
+from brian2 import Hz, ms
 
-SINGLE_EXAMPLE_TIME = 0.35 * second   # source: single_example_time
-RESTING_TIME = 0.15 * second           # source: resting_time
-START_INPUT_INTENSITY = 2.0             # source: start_input_intensity
-MIN_SPIKES = 5                           # source: hardcoded `< 5` check
+from .network import set_plasticity
 
-
-def image_to_rates(image_flat_0_255, input_intensity):
-    """source: rates = image.reshape(n_input) / 8. * input_intensity"""
-    return (image_flat_0_255 / 8.0) * input_intensity * Hz
+MAX_RATE_HZ = 63.75
+PRESENT_TIME = 350 * ms
+REST_TIME = 150 * ms
+MIN_SPIKES = 5
+RATE_BOOST_HZ = 32.0
 
 
-def present_example(components, image_flat_0_255, learning_on=True):
+def image_to_rates(image_flat_0_255, rate_scale=1.0):
+    """image_flat_0_255: length-784 array, values in [0, 255]."""
+    rates = (image_flat_0_255 / 4.0) * rate_scale
+    return np.clip(rates, 0, None) * Hz
+
+
+def present_example(components, image_flat_0_255, learning_on=True,
+                     max_rate_scale_tries=6):
     """
-    Present one image with the exact retry/intensity-boost logic from
-    the original main loop. Returns the excitatory spike-count vector
-    from the (eventually) successful presentation.
-    """
-    from brian2 import SpikeMonitor
-    from .network import set_plasticity
+    Present one MNIST image to the network, with automatic rate-boost
+    re-presentation if too few excitatory spikes are produced.
 
+    Returns: exc_spike_counts (n_e,) array of spikes fired during the
+    (possibly boosted) successful presentation.
+    """
     net = components['net']
     input_group = components['input']
-    exc_group = components['exc']
-    n_e = components['n_e']
-
+    mon = components['exc_monitor']
     set_plasticity(components, learning_on)
 
-    mon = SpikeMonitor(exc_group, name='tmp_exc_mon')
-    net.add(mon)
-
-    input_intensity = START_INPUT_INTENSITY
-    counts = np.zeros(n_e)
+    rate_scale = 1.0
     try:
-        while True:
-            input_group.rates = image_to_rates(image_flat_0_255, input_intensity)
-            n_before = mon.num_spikes
-            net.run(SINGLE_EXAMPLE_TIME)
-            n_after = mon.num_spikes
-            spikes_this_run = n_after - n_before
+        for attempt in range(max_rate_scale_tries):
+            input_group.rates = image_to_rates(image_flat_0_255, rate_scale)
+            before = mon.count[:]
+            net.run(PRESENT_TIME)
+            counts = mon.count[:] - before
+            spikes_this_run = int(counts.sum())
+
+            input_group.rates = 0 * Hz
+            net.run(REST_TIME)
 
             if spikes_this_run >= MIN_SPIKES:
-                if spikes_this_run:
-                    idx = mon.i[-spikes_this_run:]
-                    counts = np.bincount(idx, minlength=n_e).astype(float)
-                # source: rate=0, run(resting_time), THEN reset intensity
-                input_group.rates = 0 * Hz
-                net.run(RESTING_TIME)
                 break
-            else:
-                # source: input_intensity += 1; rate=0; run(resting_time); retry
-                input_intensity += 1
-                input_group.rates = 0 * Hz
-                net.run(RESTING_TIME)
+            rate_scale += RATE_BOOST_HZ / MAX_RATE_HZ
     finally:
-        net.remove(mon)
+        input_group.rates = 0 * Hz
 
+    components['_last_attempts'] = attempt + 1
+    components['_last_retry_exhausted'] = spikes_this_run < MIN_SPIKES
     return counts
