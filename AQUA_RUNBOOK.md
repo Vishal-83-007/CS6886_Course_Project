@@ -165,6 +165,33 @@ CPU (`train_cpp.cmd`) only:
 Non-default values are added to the run folder name (`_wn78`, `_in6500`) and
 recorded in `config.json`. Report them as a Fashion-only change.
 
+## Unlearning: importance (I(D)) and frozen evaluation
+
+All three run the trained network with learning OFF (no weight change, theta
+frozen), compiled CPU, one core each. Folders are relative to the project.
+
+1. Importance (Method B, and the synapse gate of Method D):
+   `qsub -v DATASET=mnist,MODEL=<baseline run folder>,POISSON_SEED=1 jobs/importance_cpp.cmd`
+   Every training image is shown once; for each synapse the update STDP would
+   have made (same rule and learning rate as training, summed over the
+   image's spikes and retries) is squared and summed per class. Output
+   `results/<dataset>/importance/<model>_seed<s>_<job>/importance.npz`:
+   `sumsq` (10 x synapses), `sum` (signed), `class_count`. Then
+   I(S) = sum of `sumsq` over the classes in S / their image count, for D (all
+   ten) and D_f (removed classes) alike. Run 2 passes (`POISSON_SEED=1` and `2`)
+   to see the Poisson noise. About 5-6 h per pass.
+2. Frozen evaluation of any weights:
+   `qsub -v DATASET=mnist,WEIGHTS=<npz>,FORGET=class6_9,FIXED_LABELS=<labels.npy> jobs/evaluate_cpp.cmd`
+   Shows the baseline's 5,000 labelling images (all ten classes) and the test
+   images of `EVAL_SPLIT`: `tune` (fixed balanced 5,000, for choosing
+   hyper-parameters, default), `final` (the other 5,000, report once) or
+   `all`. Read-outs: own labels from all classes, own labels from the retained
+   classes only, and the fixed labels file. About 1 h.
+3. Method B sweep (login node): `jobs/ssd_sweep.sh` dampens the baseline for
+   each alpha x lambda with `dampen.py` and submits one evaluation each. Note
+   I_ij(D_f)/I_ij(D) <= |D|/|D_f| (about 5 for class6_9), so alpha must lie in
+   (1, 5); the SSD paper's 5-50 was for one class of 20-100.
+
 ## If something goes wrong
 
 - Job output: `cat $(ls -t <scriptname>.o* | head -1)`, e.g. `train_cpp.o*`.
@@ -208,6 +235,12 @@ recorded in `config.json`. Report them as a Fashion-only change.
   removed-class accuracy all use the whole set); single-class, baseline and
   random10 image selections are unchanged; `jobs/settings.sh` rejects anything else before the job starts;
   `aqua/progress.sh` prints retained- and removed-class accuracy for Gold runs.
+- Unlearning tools: `src/frozen.py` + `run_frozen.py` (importance and frozen
+  evaluation), `dampen.py` (SSD), `jobs/importance_cpp.cmd`,
+  `jobs/evaluate_cpp.cmd`, `jobs/frozen_common.sh`, `jobs/ssd_sweep.sh`;
+  `build_network(..., importance=True)` adds the hypothetical update `dw_hyp`
+  (training without it is bit-identical to before); `aqua/progress.sh` also
+  lists importance/evaluate runs.
 - `DATASET2` (GPU jobs): second model on the other GPU may use another dataset.
 - `--allow-long-cuda` (runner): lifts the 1,000-image CUDA pilot limit; used
   only by `jobs/train_gpu.cmd`.

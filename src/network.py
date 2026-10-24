@@ -117,8 +117,18 @@ STDP_ON_POST = '''
 w = clip(w + eta * (pretrace - x_tar) * (w_max - w)**mu, 0, w_max)
 '''
 
+# Importance pass only (src/frozen.py): the update STDP WOULD make with the
+# training learning rate, accumulated without being applied. It is added
+# BEFORE the real update, so with eta > 0 it uses the same w as that update.
+IMPORTANCE_EQS = '''
+dw_hyp : 1
+'''
+IMPORTANCE_ON_POST = '''
+dw_hyp += eta_hyp * (pretrace - x_tar) * (w_max - w)**mu
+'''
 
-def build_network(n_excitatory=400, seed=0):
+
+def build_network(n_excitatory=400, seed=0, importance=False):
     """
     Build the Diehl & Cook three-layer SNN.
 
@@ -178,9 +188,12 @@ def build_network(n_excitatory=400, seed=0):
 
     # ---- Input -> Excitatory: all-to-all, plastic (STDP) ----
     syn_input_exc = Synapses(
-        input_group, exc_group, model=STDP_EQS,
-        on_pre=STDP_ON_PRE, on_post=STDP_ON_POST,
-        method='euler', name='input_to_exc'
+        input_group, exc_group,
+        model=STDP_EQS + (IMPORTANCE_EQS if importance else ''),
+        on_pre=STDP_ON_PRE,
+        on_post=(IMPORTANCE_ON_POST if importance else '') + STDP_ON_POST,
+        method='euler', name='input_to_exc',
+        namespace={'eta_hyp': ETA} if importance else None
     )
     syn_input_exc.connect()  # all-to-all
     syn_input_exc.w = rng.uniform(0.0, 0.3, size=n_input * n_e)
