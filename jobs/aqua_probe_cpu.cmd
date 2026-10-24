@@ -9,4 +9,4 @@
 # Load/activate your intended compiler/Python environment here if needed.
 set -uo pipefail
 cd "${PBS_O_WORKDIR:?Submit with qsub from the repository root}" || exit 1
-bash jobs/aqua_probe.sh cpu
+bash jobs/aqua_probe.sh

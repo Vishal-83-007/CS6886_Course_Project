@@ -1,7 +1,36 @@
+# Validation record
+
+Current production decision, 19 October 2026: compiled C++ on CPU only.
+Accelerator code/jobs are removed; historical observations below are retained
+as a dated record, not active execution instructions.
+
+Aqua CPU pilot 2417846: C++ and Cython responses/predictions match exactly,
+maximum final weight difference 2.78e-16. C++ simulation phases 237.4438s,
+Cython 1152.3430s. Both 43/100 validation accuracy. Aqua accelerator pilot
+2422956 completed, but baseline accuracy was 9%, silence 65%, and simulation
+phases took 2288.479s. It was not accepted for production.
+
+## CPU-only production handoff checks, 19 October 2026
+
+After retiring accelerator execution, 13 regression/job-script tests passed
+(test_fashion, test_baseline, test_aqua_setup, test_aqua_jobs). Five environment
+archive/integrity/relocation tests also passed under local Python 3.12.
+Job-script tests mock qsub: no remote submissions were made. They verify five
+matching seed-0 submissions, submission records, path forwarding, dry-run behavior,
+invalid-input rejection and preservation of historical results during cleanup.
+
+Two small real Fashion-MNIST compiled C++ checks completed three epochs through
+final-test mode: baseline used 20 unique training images / 60 presentations,
+10 assignment images and 20 test images; class6 used 18 unique / 54 presentations,
+9 assignment images and 20 test images. N=5 keeps these execution checks small;
+they do not measure production N=400 accuracy or runtime. Both saved all three
+epoch snapshots, completed metrics, and excluded forgotten IDs from Gold training
+and assignment. Production uses all images and N=400 through the job script.
+
 # Local Fashion-MNIST validation, 18 October 2026
 
 This is local CPU evidence, not Aqua/V100 performance or a final accuracy result.
-The actual Aqua pilot remains required. Source and model settings accompany each
+At the time of this local record, an Aqua pilot was still required. Source and model settings accompany each
 run in `results/fashion/` (ignored generated artifacts).
 
 Official Fashion-MNIST gzip checksums passed. Combined array SHA256:
@@ -62,3 +91,18 @@ passed (18.6s). A Python-3.12 Cython resume test could not compile locally becau
 the local system Python lacks Python.h; this does not diagnose Aqua's Anaconda
 headers. Prior Python-3.10 Cython resume checks passed. Aqua pilots must establish
 its actual Cython/compiler/GPU behavior.
+
+Setup recovery for Aqua job 2407251: the logged failure was PBS walltime during
+CPU pip installation (7288s vs 7200s), not training. Exact root cause is not
+proven; the revised setup avoids shared-home small-file installation. A fresh
+node-local-style Python 3.12 CPU install with --no-compile completed in 3.1s
+locally; dependency/import checks and packing passed. An archived environment
+was restored at a different path, with sys.prefix and NumPy imports verified
+to use the restored location. The common PBS environment-loader was exercised
+with a simulated module/PBS context. Three archive/integrity/timeout tests and
+three data/compiled-controller tests passed. These are local validation results,
+not Aqua filesystem performance predictions or GPU execution validation.
+
+Both CPU and GPU environment archives were additionally restored at new local
+paths; package imports used those restored prefixes. GPU imports passed with
+Brian2 2.8.0/Brian2CUDA 1.0a7; no GPU computation was performed.

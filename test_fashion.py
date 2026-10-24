@@ -27,7 +27,7 @@ def synthetic_run(backend, destination, resume=False, stop=False):
     args = argparse.Namespace(backend=backend, n_excitatory=5, seed=0, epochs=1,
         validation_size=0, request='baseline', resume=resume,
         max_seconds=0.000001 if stop else 0, checkpoint_seconds=0, checkpoint_every=0,
-        threads=1, gpu_id=None, compile_only=False, train_limit=10)
+        threads=1, compile_only=False, train_limit=10)
     root = Path(destination)
     root.mkdir(exist_ok=True)
     fn = run_standalone if backend == 'cpp' else run_runtime

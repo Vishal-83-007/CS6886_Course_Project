@@ -3,7 +3,7 @@
 For the Fashion-MNIST/Aqua workflow, start with
 [FASHION_AQUA_RUNBOOK.md](FASHION_AQUA_RUNBOOK.md). It documents the new
 `run_fashion.py` runner, reproducible baseline/Gold splits, CPU checkpoint/resume,
-compiled CPU execution, and bounded CUDA pilots. The older MNIST instructions
+compiled C++ CPU execution, and parallel baseline/Gold training. The older MNIST instructions
 below describe `run_baseline.py` and remain separate.
 
 Course project: importance-based machine unlearning on a Spiking Neural
@@ -116,9 +116,11 @@ dependencies. If compilation fails, fix the compiler setup before a long run;
 `--backend numpy` is available for debugging but will generally be slower.
 Check the measured throughput on your target CPU.
 
-Brian2CUDA exists, but the per-image retry and immediate spike-count decision
-in this script would require a larger refactor to use it efficiently. CPU
-profiling is the first step; GPU work is outside this branch's scope.
+Fashion-MNIST production uses Brian2 C++ standalone, with one independent
+model per CPU job. See the Aqua runbook for full three-epoch baseline/Gold
+submission. The Cython implementation remains a reference and exact-resume
+fallback. Historical accelerator pilot results remain under ignored results;
+accelerator execution is retired from the active codebase.
 
 ## Validation performed
 

@@ -35,7 +35,7 @@ def arguments():
                    help='Common balanced pilot pool before deletion; 0 means all training IDs')
     p.add_argument('--eval-limit', type=int, default=0,
                    help='Balanced validation/test subset for timing pilots only')
-    p.add_argument('--backend', choices=('cython', 'numpy', 'cpp', 'cuda'), default='cython')
+    p.add_argument('--backend', choices=('cpp', 'cython', 'numpy'), default='cpp')
     p.add_argument('--resume', action='store_true', help='Exact same-environment CPU runtime resume')
     p.add_argument('--checkpoint-seconds', type=float, default=900)
     p.add_argument('--max-seconds', type=float, default=0,
@@ -43,8 +43,6 @@ def arguments():
     p.add_argument('--checkpoint-every', type=int, default=0,
                    help='Also checkpoint every N presentations (useful for smoke tests)')
     p.add_argument('--threads', type=int, default=1, help='Compiled CPU threads / compiler jobs')
-    p.add_argument('--gpu-id', type=int, default=None,
-                   help='Allocated GPU index within CUDA_VISIBLE_DEVICES; required for CUDA')
     p.add_argument('--compile-only', action='store_true', help='Build standalone without executing')
     a = p.parse_args()
     for name in ('epochs', 'n_excitatory', 'assign_per_class', 'threads'):
@@ -53,10 +51,8 @@ def arguments():
     if any(getattr(a, n) < 0 for n in ('validation_size', 'train_limit', 'eval_limit',
                                       'checkpoint_seconds', 'checkpoint_every', 'max_seconds')):
         p.error('Counts and time budgets must be nonnegative')
-    if a.backend in ('cpp', 'cuda') and (a.resume or a.max_seconds):
+    if a.backend == 'cpp' and (a.resume or a.max_seconds):
         p.error('Standalone resume/time-budget interruption is not yet supported; use cython')
-    if a.backend == 'cuda' and a.gpu_id is None:
-        p.error('CUDA requires --gpu-id identifying an allocated device; visibility is not entitlement')
     return a
 
 
@@ -116,7 +112,7 @@ def setup_run(a):
         except (subprocess.CalledProcessError, FileNotFoundError):
             revision, dirty = 'unknown', 'unknown'
         packages = {}
-        for package in ('brian2', 'brian2cuda', 'numpy', 'Cython'):
+        for package in ('brian2', 'numpy', 'Cython'):
             try:
                 packages[package] = importlib.metadata.version(package)
             except importlib.metadata.PackageNotFoundError:
@@ -320,7 +316,7 @@ def summarize(a, arrays, manifest, counts, root, progress):
 def main():
     a = arguments()
     arrays, manifest, schedule, root, signature = setup_run(a)
-    if a.backend in ('cpp', 'cuda'):
+    if a.backend == 'cpp':
         from .fashion_standalone import run_standalone
         return run_standalone(a, arrays, manifest, schedule, root, signature)
     return run_runtime(a, arrays, manifest, schedule, root, signature)

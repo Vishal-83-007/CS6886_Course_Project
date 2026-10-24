@@ -21,7 +21,7 @@ def main():
     args = parser.parse_args()
     tag = 'cp' + args.python_version.replace('.', '')
     destination = Path(args.output) / tag
-    for kind in ('cpu', 'gpu'):
+    for kind in ('cpu',):
         directory = destination / kind
         directory.mkdir(parents=True, exist_ok=True)
         # Remove only the readiness marker before a new download. Old wheel files

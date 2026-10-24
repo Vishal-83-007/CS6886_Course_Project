@@ -1,60 +1,52 @@
-# Fashion-MNIST baseline, Gold and unlearning on Aqua
+# Fashion-MNIST CPU training and unlearning plan
 
-Updated after uploaded diagnostics, 18 October 2026. Fashion-MNIST only; MNIST
-is handled by another member. The Fashion-MNIST runner, runtime checkpoints,
-compiled controller and PBS pilot/training scripts are now implemented. See the
-runbook for tested paths and remaining CUDA validation. No new Aqua jobs have
-been submitted from this workspace.
+Updated 19 October 2026. Production is compiled C++ on CPU. Accelerator training
+has been retired at the user's request after Aqua pilot 2422956 completed but
+showed substantially worse behavior and throughput than the CPU reference.
+Historical diagnostics/results are preserved. No remote jobs have been submitted
+by this assistant.
 
-## Decisions
+## Locked first production suite
 
-Keep the conductance-based Diehl–Cook power-law STDP model, N=400. Start with
-three shuffled epochs and save one-/two-/three-epoch checkpoints. Tune using
-validation, not test data. No Fashion-MNIST accuracy promise can be inferred
-from the earlier MNIST experiment.
+Use the existing conductance-based Diehl–Cook power-law STDP model, N=400,
+dt=0.5 ms, 350 ms stimulation + 150 ms rest, and at most six attempts per
+presentation. Keep model/rate/precision settings fixed across baseline and Gold.
+Use three shuffled epochs, seed 0 first, split seed 42 and 500 allowed assignment
+examples per available class. This is the selected initial production configuration,
+not a claim that accuracy has converged or that hyperparameters were tuned.
 
-Use the live two-running-GPU-job limit. GPU count and job count are separate.
-For the first GPU pilot, request both V100s on one node and mask one worker to
-each, because the one-GPU diagnostic did not expose device isolation. Keep CPU
-work in separate allocations. Baseline and Gold can train concurrently after the
-configuration is locked: Gold starts fresh and never needs baseline weights.
+The production job explicitly uses all 60,000 official training images for
+baseline, 54,000 retain images for each Gold, and all 10,000 official test images
+for final evaluation. Validation size is 0 in the production job; CLI development
+runs still default to a held-out 5,000-image validation split. Do not change model
+settings based on final test results. For intentional tuning, use separate
+VALIDATION_SIZE=5000 runs, then regenerate matching final baseline/Gold models.
 
-## Confirmed Aqua diagnostics (18 October 2026)
+One independent model per one-core PBS allocation. Baseline and Gold start fresh
+and can run concurrently. Gold has no dependency on trained baseline weights.
+The launcher submits baseline, class6, class0, class9 and random10 at seed 0;
+SEEDS="1 2" extends the paired suite. Queue admission controls concurrency;
+recorded small-resource diagnostics suggested five such running jobs per user,
+subject to current routing and other jobs. Do not request extra cores unless a
+separate threading benchmark justifies them.
 
-The uploaded `aqua_diagnostics/2406453.hn1/probe.log` and
-`2406456.hn1/probe.log` supersede public-policy assumptions:
+## Measured evidence and walltime
 
-- Live `gpuq`: `max_run = [u:PBS_GENERIC=2]`, i.e. the generic per-user limit
-  is TWO running GPU jobs, not the public page's four. No per-user GPU-count
-  limit is shown. `resources_max.ngpus=24` is a queue job resource maximum,
-  not an entitlement to 24 GPUs. Maximum GPU walltime is 48h.
-- GPU node: two Tesla V100-PCIE-32GB GPUs; driver 470.57.02, driver-reported
-  CUDA 11.4. GCC 9.2.0; default toolkit 10.1. CUDA 11.4 is available: explicitly
-  unload cuda10.1/load cuda11.4. Newer listed toolkit modules do not by themselves
-  establish runtime compatibility with this driver.
-- One requested GPU exposed BOTH devices with `CUDA_VISIBLE_DEVICES` unset.
-  Do not guess a free GPU from utilization. The initial GPU pilot requests both
-  GPUs on one node and launches one explicitly masked worker per allocated GPU.
-  That consumes one running GPU job. A second job may be possible but is not a
-  guaranteed GPU allocation. Do not expand beyond admitted resources.
-- CPU node: Xeon Gold 6248, 40 physical cores; GPU host: Gold 6142, 32 cores.
-  Server small-resource limits: `smallc=80`, `smallq=5` running, `smallq=20`
-  queued-resource limit per generic user. These are custom tracked resources;
-  with the observed `smallq=1` per CPU job this suggests up to five such jobs,
-  subject to routing/account rules. The short CPU probe actually ran in small8,
-  despite the example's small20 submission; use the actual allocated queue.
-- Default Python failed on `importlib.metadata`; the user subsequently confirmed
-  login Python 2.6.6 and module anaconda3_2024.10. Use the new CPU setup job to
-  create dedicated Python 3.10 CPU/GPU environments. The probe now prints Python
-  version before optional package checks.
+Aqua CPU job 2417846: identical image schedule, exact assignment/evaluation spike
+responses and predictions for C++ and Cython; final weights differ by at most
+2.78e-16. C++ phase times were 190.895s training (1,000 images), 23.8031s
+assignment (100), and 22.7457s validation (100). Both scored 43/100 validation
+accuracy. This is a short pilot, not final model accuracy.
 
-Ready jobs and commands are in `FASHION_AQUA_RUNBOOK.md`. Training can begin
-on CPUs while CUDA is validated. Use the resumable Cython runner for long jobs,
-compiled CPU when the measured run fits a single allocation, and CUDA only for
-bounded pilots until the controller passes on actual Aqua hardware. CUDA source
-is implemented but has not been compiled/run locally: no nvcc/GPU here, and
-GPU execution remains untested. Its dependencies now install/import offline
-under Python 3.12, but this is not GPU-controller validation.
+Linear projection for the final baseline (180k training, 5k assignment, 10k
+evaluation presentations) is 10.51h before compilation/I/O and headroom; 20%
+headroom gives about 12.6h. Later-epoch spike activity and retries can change
+rates substantially. Jobs request 48h; inspect progress and actual queue limits.
+
+C++ saves inference weights/thresholds every 5,000 presentations and each epoch,
+not full training state. A killed run cannot resume exactly and must restart
+fresh. Keep the Cython reference/exact-resume fallback, but production jobs use
+C++ only. No exact-resume capability is claimed for the compiled controller.
 
 ## What counts as unlearning, and how many Gold models
 
@@ -147,142 +139,21 @@ Neither finite MIA results, low accuracy nor relearning tests certify exact
 unlearning. Include representation and relearning diagnostics as empirical
 probes. Compare behavior with the distribution of Gold results across seeds.
 
-## Implementation sequence and current state
+## Execution and outputs
 
-1. Fashion-MNIST cached IDX/NumPy loader, offline execution and dataset checks;
-   deterministic manifests for class0/class6/class9/random10 and development
-   validation. Assert exclusion, counts and train/test separation. No new MNIST work.
-2. Import-safe runner; true epochs, actual unique/presentation counts; baseline/
-   Gold mode; seed/config/forget IDs; separate output paths and phase timing.
-   Current sampler caps counts and cannot implement repeated epochs.
-3. Atomic periodic checkpoints: weights/theta, membrane/conductance/pretrace,
-   timers/refractory/time state, RNG, order/cursor. Verify exact continuation
-   on the same backend. Existing weight/theta saves are inference only. If CUDA
-   resume is approximate, say so and do not rely on it for controlled primary runs.
-4. Start CPU pilots after these foundations. Existing Cython/NumPy execute on
-   CPU even inside GPU jobs; preserve Cython as the reference.
-5. Refactor presentation/retry control into compiled C++ standalone/Brian2CUDA.
-   Preserve 350 ms stimulation, 150 ms rest, dt=0.5 ms, six-attempt cap, STDP
-   during failed attempts and frozen assignment/evaluation. No Python callback
-   as a standalone solution, per-image compilation/restart or full weight copy.
-   Chunk inputs with complete state/time continuity and bounded artifacts.
-6. CPU/GPU semantics checks with deterministic inputs, then stochastic pipeline
-   checks. RNG streams need not be bitwise equal. Benchmark 100 warmup + 1,000
-   measured images with compilation separate, and repeat at a later checkpoint.
-   Record retries/failures, spikes, utilization, weight/theta distributions and
-   all toolchain versions. Benchmark compiled CPU with 1/2/4 threads too.
-7. Lock dependencies against actual Aqua driver/toolkit/compiler. CUDA 11.4 in
-   the example is not proof it is the only toolkit. Time-box the initial CUDA
-   feasibility spike to about 90 minutes after setup; keep CPU work running.
-   This is a decision checkpoint, not a promise of completing a port in 90 minutes.
-8. Implement evaluation above, then real CPU/GPU training job scripts with
-   isolated caches/builds and recoverable outputs. Use scratch for execution;
-   source and durable artifacts remain outside temporary scratch as site policy
-   requires. Save checkpoints during execution, not only at EXIT. Plan graceful
-   checkpoint/exit before walltime and resume in a new allocation.
+See FASHION_AQUA_RUNBOOK.md for the CPU-only transfer archive, cleanup and
+submission commands. Reuse the already validated CPU environment; no rebuild
+is required. Each PBS job expands that archive locally and isolates its builds.
+Durable result directories include request, seed, data split, backend and job ID.
 
-Keep duration, precision, rate gain and retries unchanged during backend checks.
-Validate intentional tuning separately. Validation must not mutate continuing
-training state or RNG; use frozen copies. Lock configuration before expensive
-Gold runs and regenerate matching Gold models if it changes. CPU execution and compiled-loop tests now pass locally. CUDA remains a smoke-test
-path until actual Aqua compilation and semantic checks succeed.
+Production trains all epochs, assigns neurons on allowed training examples with
+learning frozen, then evaluates every test image with learning frozen. Saves
+include config/data/source/order hashes, environment, manifests, inference
+snapshots, final weights/theta, neuron labels, response counts, predictions,
+class scores, confusion and per-class metrics, retry statistics and phase times.
+The current runner does not yet implement the complete unlearning/MIA/audit
+suite described above. Training the baseline/Gold models establishes its inputs.
 
-## CPU + GPU schedule
-
-First submit the CPU pilot, comparing Cython and compiled C++ on identical
-1,000-image Fashion-MNIST pools. In parallel, a two-GPU pilot runs baseline and
-class6 with explicit per-worker masks. The GPU runner is intentionally restricted
-to <=1,000 unique training images and one epoch pending Aqua validation.
-
-After validation/config lock, use two independent workers (baseline + class6,
-then random10 + class9, then class0 + next-seed baseline). This may be one
-admitted two-GPU job or separate correctly bound allocations. The generic limit
-is TWO running GPU jobs. If a second dual-GPU job is admitted, four workers can
-advance the suite; do not equate a job limit with guaranteed GPU capacity.
-Gold has no dependency on baseline weights and can start at config lock.
-
-CPU production: one core per Cython model (exact resume supported). Several
-independent CPU jobs may run within the observed small-resource limits. Compiled
-CPU is the preferred speed experiment; `aqua_cpp_train.cmd` is available once the
-pilot predicts completion within 48h with headroom. Its snapshots are inference
-only, not exact training continuation. More requested CPUs do not automatically
-parallelize Cython. Benchmark explicit OpenMP 1/2/4 threads before reserving them.
-
-CPU/GPU comparisons need validated equivalent dynamics; until then keep complete
-matched baseline/Gold pairs on the same backend. Do not merge independently
-trained STDP weights to simulate parallel training. CPU preparation, plotting,
-evaluation and later importance work can free GPU capacity.
-
-## Conditional runtime and budget
-
-No Fashion-MNIST Aqua rate is measured. The old 9h/30k from another dataset is
-not a Fashion-MNIST estimate. These counts include a single final test pass:
-
-- Baseline: 180k train + 5k assign + 10k test = 195k presentations.
-- Class Gold: 162k + 4.5k + 10k = 176.5k each.
-- random10 Gold: 162k + 5k + 10k = 177k.
-- One-seed suite = 901.5k; three-seed suite = 2,704.5k presentations.
-
-| Assumed effective s/presentation | Baseline | Class Gold | One-seed total device-hours | Three-seed total device-hours |
-| --- | ---: | ---: | ---: | ---: |
-| 0.10 | 5.42 h | 4.90 h | 25.04 h | 75.13 h |
-| 0.25 | 13.54 h | 12.26 h | 62.60 h | 187.81 h |
-| 0.50 | 27.08 h | 24.51 h | 125.21 h | 375.63 h |
-
-One-seed five-model suite with four GPUs: approximately 9.8/24.5/49.0h at
-those rates; with two GPUs: 14.7/36.8/73.5h. Baseline + class6 concurrently:
-5.4/13.5/27.1h. Add at least 20% headroom plus setup/build/queue wait. These
-are arithmetic scenarios, not V100 or A100 predictions. Different phases,
-requests and checkpoints can have different rates. Device-hours mean GPU-hours
-only on GPUs; CPU jobs need independently measured rates.
-
-Use `Tbuild + Ptrain*strain + Passign*sassign + Ptest*stest + Tcheckpoint`.
-Rates include retries; do not multiply them twice. Add validation, stochastic
-audits, importance accumulation, privacy-model training and unlearning separately.
-Slow CPU runs may exceed 48h and require validated checkpoint continuation.
-One-epoch baseline with assign/test is 75k: ~2.1h at 0.1 s or ~5.2h at 0.25 s,
-before headroom. Today target probes, usable code, pilots and first recoverable
-runs; a complete validated CUDA refactor tonight is not promised.
-
-A100 access can be requested in parallel if approval is slow. IITM lists A100s
-under [PARAM Shakti](https://cc.iitm.ac.in/hpce/paramshakti.html); confirm its
-account, scheduler, charging and queue limits separately. N=400 can be dominated
-by control/kernel-launch overhead. Request measured compute, not an assumed
-V100-to-A100 speed ratio. Compare time-to-result including queue/setup.
-
-## Two-week delivery
-
-| Dates | Deliverable |
-| --- | --- |
-| Oct 18 | Submit probes, manifests/checkpoint work, CPU pilot, CUDA feasibility |
-| Oct 19–20 | Backend correctness, measured throughput, validation/config lock |
-| Oct 21–22 | Seed-0 baseline + four Gold models; remaining seeds started |
-| Oct 23–25 | A/B, hypothetical-STDP I(D), limited validation sweeps |
-| Oct 26–28 | Anti-STDP/LTD-only/gated leak; remaining paired runs |
-| Oct 29–30 | Held-out MIA, behavioral/representation/relearning and cost results |
-| Oct 31–Nov 1 | Reruns, figures, reproducible report and buffer |
-
-First gate is reliable baseline + class6 Gold. Final target is four requests
-and three paired seeds, with all limitations explicit. Defer N=1600, all-ten-
-class Gold, fraction sweeps and stretch goals first if time is tight. Importance
-is separately benchmarked frozen observation, not free training output; report
-one-time I(D), per-request forgetting, reassignment, inference and retraining costs.
-N=1600 requires its own Gold and budget (4x input synapses, ~16x inhibitory
-connections), so it is optional after the N=400 experiment is secured.
-
-Additional implementation references:
-
-- [Brian standalone execution](https://brian2.readthedocs.io/en/stable/user/computation.html)
-- [Brian2CUDA GPU selection](https://brian2cuda.readthedocs.io/en/latest/introduction/cuda_configuration.html)
-- [Brian2CUDA installation](https://brian2cuda.readthedocs.io/en/latest/introduction/install.html)
-- [Aqua operational documents](https://cc.iitm.ac.in/hpce/aqua.html)
-
-## Setup correction after job 2406770
-
-The compute node reports glibc 2.17 but failed DNS resolution for
-conda.anaconda.org before creating environments. The user confirmed the installed
-anaconda3_2024.10 module already provides Python 3.12.7. The setup now reuses
-that interpreter in isolated venvs and installs transferred glibc-2.17-compatible
-CPython 3.12 wheels with --no-index; no online Conda environment creation.
-See the runbook and scripts/prepare_aqua_wheels.py. Earlier Python 3.10 setup
-recommendations are superseded for Aqua. Keep exact versions fixed for resume.
+Priority: inspect seed-0 baseline + class6, complete all seed-0 requests, then
+seeds 1 and 2. Run the same selected configuration and backend for every paired
+comparison. Defer N=1600 and fraction/request extensions until this suite is secure.

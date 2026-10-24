@@ -7,9 +7,9 @@
 
 set -euo pipefail
 source "${PBS_O_WORKDIR:?}/jobs/aqua_common.sh"
-# One reference pilot, then the same inputs with compiled CPU control.
+# Run compiled CPU first so its result is available before the slower reference.
 # Actual Fashion-MNIST, not synthetic data. No final-test tuning.
-for backend in cython cpp; do
+for backend in cpp cython; do
     "$FASHION_PYTHON" run_fashion.py --data-dir "$FASHION_DATA" \
         --backend "$backend" --epochs 1 --train-limit 1000 \
         --assign-per-class 10 --eval-limit 100 --n-excitatory 400 \

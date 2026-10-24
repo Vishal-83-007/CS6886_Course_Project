@@ -16,3 +16,5 @@ aqua_diagnostics/
 aqua_runs/
 proposal_final_report.pdf
 
+fashion_normal_cpu_aqua/
+*.tar.gz
