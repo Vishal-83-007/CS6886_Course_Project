@@ -143,6 +143,28 @@ Examples, the same settings as the N=800 MNIST baseline:
 `qsub -v DATASET=mnist,N=800,REQUEST=class3 jobs/train_cpp.cmd` (without digit 3),
 `qsub -v DATASET=mnist,N=800,REQUEST=class6_9 jobs/train_cpp.cmd` (without 6 and 9).
 
+## Fashion-MNIST input settings (`WEIGHT_NORM`, `INPUT_TOTAL_HZ`)
+
+With the MNIST settings, the full Fashion-MNIST baseline (job 2461990) reached
+only 42.84%. Diagnosis: Fashion images light about 390 pixels (MNIST 150) with
+2.2x the total input (mean 14,296 Hz vs 6,530 Hz). Most synapses were
+potentiated (mean weight 0.53 vs 0.085 on MNIST; per-neuron weight sums
+165-475 vs 35-101), firing drove every adaptive threshold to theta ~ 70.9 mV,
+i.e. a firing threshold of about -1.2 mV, just below the 0 mV excitatory
+reversal potential that the membrane cannot exceed. 19% of test images gave no
+spike (counted as class 0), 53% of presentations needed a retry, and no neuron
+was labelled Sandal.
+
+Two optional fixes, both off by default (MNIST runs are unchanged), compiled
+CPU (`train_cpp.cmd`) only:
+- `WEIGHT_NORM=78`: before every training presentation, scale each excitatory
+  neuron's input weights to sum to 78 (as in Diehl & Cook's released code),
+  then clip to w_max.
+- `INPUT_TOTAL_HZ=6500`: scale every image (training, labelling, test) so its
+  784 input rates sum to 6,500 Hz (about the MNIST mean) before the retry boost.
+Non-default values are added to the run folder name (`_wn78`, `_in6500`) and
+recorded in `config.json`. Report them as a Fashion-only change.
+
 ## If something goes wrong
 
 - Job output: `cat $(ls -t <scriptname>.o* | head -1)`, e.g. `train_cpp.o*`.

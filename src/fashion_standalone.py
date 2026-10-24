@@ -202,6 +202,8 @@ def run_standalone(a, arrays, manifest, schedule, root, signature):
     plasticity = host(components['exc'], 'plasticity_enabled')
     weights = host(components['syn_input_exc'], 'w')
     theta = host(components['exc'], 'theta')
+    post = host(components['syn_input_exc'], '_synaptic_post')
+    w_max = host(components['syn_input_exc'], 'w_max')
     ne = a.n_excitatory
     ns = 784 * ne
     count_sync = sync(components['exc_monitor'], 'count', ne, False)
@@ -238,6 +240,20 @@ def run_standalone(a, arrays, manifest, schedule, root, signature):
     long long fashion_exhausted = 0;
     int fashion_previous_stage = -1;
     std::vector<int> fashion_before({ne}), fashion_counts({ne});
+    // Optional Diehl & Cook (released code) weight normalisation: each
+    // excitatory neuron's input weights are scaled to sum to {a.weight_norm},
+    // then clipped to w_max (the power-law STDP term (w_max - w)^mu is
+    // undefined above w_max).
+    std::vector<double> fashion_colsum({ne});
+    auto fashion_normalize = [&]() {{
+        std::fill(fashion_colsum.begin(), fashion_colsum.end(), 0.0);
+        for(size_t k = 0; k < {ns}; ++k) fashion_colsum[{post}[k]] += {weights}[k];
+        for(size_t k = 0; k < {ns}; ++k) {{
+            const double total = fashion_colsum[{post}[k]];
+            if(total > 0)
+                {weights}[k] = std::min({weights}[k] * ({a.weight_norm!r} / total), {w_max}[k]);
+        }}
+    }};
     auto fashion_snapshot = [&](size_t position) {{
         {snapshot_sync}
         for(size_t k=0; k < {ns}; ++k)
@@ -261,9 +277,17 @@ def run_standalone(a, arrays, manifest, schedule, root, signature):
         const unsigned char* fashion_pixels =
             (fashion_phase == 2 && {int(not a.validation_size)}) ? fashion_test.data() : fashion_train.data();
         int fashion_total = 0, fashion_attempt = 0;
+        const unsigned char* fashion_image = fashion_pixels + fashion_ids[fashion_position] * 784;
+        double fashion_scale = 1.0;
+        if({a.input_total_hz!r} > 0) {{
+            double fashion_sum = 0;
+            for(int k = 0; k < 784; ++k) fashion_sum += fashion_image[k] / 4.0;
+            if(fashion_sum > 0) fashion_scale = {a.input_total_hz!r} / fashion_sum;
+        }}
         for(; fashion_attempt < 6; ++fashion_attempt) {{
+            if({int(bool(a.weight_norm))} && fashion_phase == 0) fashion_normalize();
             for(int k = 0; k < 784; ++k)
-                {rates}[k] = fashion_pixels[fashion_ids[fashion_position] * 784 + k] / 4.0
+                {rates}[k] = fashion_image[k] / 4.0 * fashion_scale
                               * (1.0 + fashion_attempt * 32.0 / 63.75);
             {rate_sync}
             {count_sync}

@@ -21,6 +21,12 @@
 #                     qsub -v list); random10: without a fixed random 10% of
 #                     each class
 #   SEED              model seed                                (default 0)
+#   WEIGHT_NORM       0 = off; e.g. 78: before every training presentation
+#                     scale each neuron's input weights to sum to 78 (Diehl &
+#                     Cook released code). Compiled CPU jobs only (default 0)
+#   INPUT_TOTAL_HZ    0 = off; e.g. 6500: scale every image so its input rates
+#                     sum to this (MNIST mean is about 6,500 Hz). Compiled CPU
+#                     jobs only (default 0)
 # GPU jobs only (train_gpu.cmd, pilot_gpu.cmd) run a second model on the node's
 # second GPU when either of these is given:
 #   N2                neurons of the second model           (default: same as N)
@@ -46,6 +52,8 @@ EVAL_LIMIT="${EVAL_LIMIT:-0}"
 ASSIGN_PER_CLASS="${ASSIGN_PER_CLASS:-500}"
 REQUEST="${REQUEST:-baseline}"
 SEED="${SEED:-0}"
+WEIGHT_NORM="${WEIGHT_NORM:-0}"
+INPUT_TOTAL_HZ="${INPUT_TOTAL_HZ:-0}"
 request_help="REQUEST must be baseline, random10, classK (K = 0..9) or several classes in increasing order joined by _, e.g. class6_9 (got '$REQUEST')"
 if [[ "$REQUEST" =~ ^class[0-9](_[0-9])*$ ]]; then
     previous=-1; removed=0
@@ -61,7 +69,7 @@ fi
 # Check the numbers now, with a plain message, instead of failing deep inside
 # Python. Image subsets are balanced (equal per class), so they are limited by
 # the rarest class: MNIST has 5,421 training / 892 test images of digit 5.
-for var in N EPOCHS TRAIN_LIMIT VALIDATION_SIZE EVAL_LIMIT ASSIGN_PER_CLASS SEED; do
+for var in N EPOCHS TRAIN_LIMIT VALIDATION_SIZE EVAL_LIMIT ASSIGN_PER_CLASS SEED WEIGHT_NORM INPUT_TOTAL_HZ; do
     [[ "${!var}" =~ ^[0-9]+$ ]] || settings_error "$var must be a whole number (got '${!var}')"
 done
 if [ -n "${N2:-}" ]; then
@@ -102,7 +110,8 @@ export FASHION_RESULTS="${FASHION_RESULTS:-$PBS_O_WORKDIR/results/$DATASET}"
 # Run arguments that do not depend on the dataset (neuron count added per run).
 run_args=(--request "$REQUEST" --seed "$SEED" --epochs "$EPOCHS"
           --validation-size "$VALIDATION_SIZE" --train-limit "$TRAIN_LIMIT"
-          --eval-limit "$EVAL_LIMIT" --assign-per-class "$ASSIGN_PER_CLASS")
+          --eval-limit "$EVAL_LIMIT" --assign-per-class "$ASSIGN_PER_CLASS"
+          --weight-norm "$WEIGHT_NORM" --input-total-hz "$INPUT_TOTAL_HZ")
 # Full arguments for a run on DATASET.
 common_args=(--dataset "$DATASET" --data-dir "$FASHION_DATA" "${run_args[@]}")
 
@@ -111,11 +120,15 @@ run_name() {  # $1 = neuron count
     local train="$TRAIN_LIMIT" eval="$EVAL_LIMIT"
     [ "$train" = 0 ] && train=all
     [ "$eval" = 0 ] && eval=all
-    echo "n${1}_${REQUEST}_seed${SEED}_ep${EPOCHS}_train${train}_val${VALIDATION_SIZE}_eval${eval}_assign${ASSIGN_PER_CLASS}"
+    local extra=""   # only non-default input settings, so older names stay unchanged
+    [ "$WEIGHT_NORM" != 0 ] && extra+="_wn${WEIGHT_NORM}"
+    [ "$INPUT_TOTAL_HZ" != 0 ] && extra+="_in${INPUT_TOTAL_HZ}"
+    echo "n${1}_${REQUEST}_seed${SEED}_ep${EPOCHS}_train${train}_val${VALIDATION_SIZE}_eval${eval}_assign${ASSIGN_PER_CLASS}${extra}"
 }
 
 print_settings() {
     echo "Settings: DATASET=$DATASET N=$N${DATASET2:+ DATASET2=$DATASET2}${N2:+ N2=$N2}" \
          "EPOCHS=$EPOCHS TRAIN_LIMIT=$TRAIN_LIMIT VALIDATION_SIZE=$VALIDATION_SIZE" \
-         "EVAL_LIMIT=$EVAL_LIMIT ASSIGN_PER_CLASS=$ASSIGN_PER_CLASS REQUEST=$REQUEST SEED=$SEED"
+         "EVAL_LIMIT=$EVAL_LIMIT ASSIGN_PER_CLASS=$ASSIGN_PER_CLASS REQUEST=$REQUEST SEED=$SEED" \
+         "WEIGHT_NORM=$WEIGHT_NORM INPUT_TOTAL_HZ=$INPUT_TOTAL_HZ"
 }

@@ -54,6 +54,15 @@ def arguments():
     p.add_argument('--checkpoint-every', type=int, default=0,
                    help='Also checkpoint every N presentations (useful for smoke tests)')
     p.add_argument('--threads', type=int, default=1, help='Compiled CPU threads / compiler jobs')
+    p.add_argument('--weight-norm', type=float, default=0,
+                   help='Diehl & Cook released-code weight normalisation: before every '
+                        'training presentation, scale each excitatory neuron\'s input '
+                        'weights to sum to this value (78 in Diehl & Cook), then clip to '
+                        'w_max. 0 = off. Compiled CPU backend only')
+    p.add_argument('--input-total-hz', type=float, default=0,
+                   help='Brightness normalisation: scale every image (training, labelling '
+                        'and test) so its 784 input rates sum to this many Hz before the '
+                        'retry boost. 0 = off (rate = pixel / 4). Compiled CPU backend only')
     p.add_argument('--gpu-id', type=int, default=None,
                    help='Allocated GPU index within CUDA_VISIBLE_DEVICES; required for CUDA')
     p.add_argument('--compile-only', action='store_true', help='Build standalone without executing')
@@ -71,6 +80,10 @@ def arguments():
         p.error('Counts and time budgets must be nonnegative')
     if a.backend in ('cpp', 'cuda') and (a.resume or a.max_seconds):
         p.error('Standalone resume/time-budget interruption is not yet supported; use cython')
+    if (a.weight_norm or a.input_total_hz) and a.backend != 'cpp':
+        p.error('--weight-norm and --input-total-hz are implemented for --backend cpp only')
+    if a.weight_norm < 0 or a.input_total_hz < 0:
+        p.error('--weight-norm and --input-total-hz must be nonnegative')
     if a.backend == 'cuda' and a.gpu_id is None:
         p.error('CUDA requires --gpu-id identifying an allocated device; visibility is not entitlement')
     return a
