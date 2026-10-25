@@ -46,6 +46,10 @@ for run in runs:
     m = json.load(open(f'{run}/metrics.json')) if os.path.exists(f'{run}/metrics.json') else None
     if m is not None and m.get('mode') == 'importance':
         line += f"\n    importance from {m['n_images']} training images, {m['spikes_per_image']:.1f} spikes/image"
+    elif m is not None and m.get('mode') == 'replay':
+        line += (f"\n    {m['gate']} gate: {m['gated_synapses']} synapses ({m['gated_neurons']} neurons), "
+                 f"gated weight {m['gated_weight_sum_before']:.0f} -> {m['gated_weight_sum_after']:.0f}, "
+                 f"other {m['ungated_weight_sum_before']:.0f} -> {m['ungated_weight_sum_after']:.0f}")
     elif m is not None and m.get('mode') == 'evaluate':
         for name, r in m['readouts'].items():
             line += f"\n    {name}: {100 * r['accuracy']:.2f}% on {m['n_evaluation']} {m['eval_split']} images"

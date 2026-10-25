@@ -165,10 +165,11 @@ CPU (`train_cpp.cmd`) only:
 Non-default values are added to the run folder name (`_wn78`, `_in6500`) and
 recorded in `config.json`. Report them as a Fashion-only change.
 
-## Unlearning: importance (I(D)) and frozen evaluation
+## Unlearning: importance (I(D)), frozen evaluation, Methods B and D
 
-All three run the trained network with learning OFF (no weight change, theta
-frozen), compiled CPU, one core each. Folders are relative to the project.
+Items 1-3 run the trained network with learning OFF (no weight change, theta
+frozen); item 4 replays with STDP on. Compiled CPU, one core per job. Folders
+are relative to the project.
 
 1. Importance (Method B, and the synapse gate of Method D):
    `qsub -v DATASET=mnist,MODEL=<baseline run folder>,POISSON_SEED=1 jobs/importance_cpp.cmd`
@@ -191,6 +192,15 @@ frozen), compiled CPU, one core each. Folders are relative to the project.
    each alpha x lambda with `dampen.py` and submits one evaluation each. Note
    I_ij(D_f)/I_ij(D) <= |D|/|D_f| (about 5 for class6_9), so alpha must lie in
    (1, 5); the SSD paper's 5-50 was for one class of 20-100.
+4. Method D (`src/replay.py`, `jobs/replay_cpp.cmd`, sweep `jobs/leak_sweep.sh`):
+   replay R retained training images with STDP on (training rule and rate)
+   and multiply every gated weight by (1 - LEAK) after each image. GATE=neuron:
+   all input synapses of neurons the baseline labelled with a removed class;
+   GATE=synapse: I(Df) > ALPHA * I(D) from the importance passes. theta frozen
+   by default (THETA=updated as the ablation). WEIGHT_NORM=39 for the Fashion
+   baseline (as in its training) is applied only to neurons with no gated
+   synapse, so it cannot undo the leak; 0 for MNIST. Each job replays and then
+   evaluates (tuning half, baseline fixed labels + own labels).
 
 ## If something goes wrong
 
@@ -236,7 +246,8 @@ frozen), compiled CPU, one core each. Folders are relative to the project.
   random10 image selections are unchanged; `jobs/settings.sh` rejects anything else before the job starts;
   `aqua/progress.sh` prints retained- and removed-class accuracy for Gold runs.
 - Unlearning tools: `src/frozen.py` + `run_frozen.py` (importance and frozen
-  evaluation), `dampen.py` (SSD), `jobs/importance_cpp.cmd`,
+  evaluation), `src/replay.py` + `run_replay.py` (Method D), `dampen.py` (SSD),
+  `jobs/replay_cpp.cmd`, `jobs/leak_sweep.sh`, `jobs/importance_cpp.cmd`,
   `jobs/evaluate_cpp.cmd`, `jobs/frozen_common.sh`, `jobs/ssd_sweep.sh`;
   `build_network(..., importance=True)` adds the hypothetical update `dw_hyp`
   (training without it is bit-identical to before); `aqua/progress.sh` also
