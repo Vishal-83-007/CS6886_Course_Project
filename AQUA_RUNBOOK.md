@@ -202,6 +202,12 @@ are relative to the project.
    synapse, so it cannot undo the leak; 0 for MNIST. Each job replays and then
    evaluates (tuning half, baseline fixed labels + own labels).
 
+Sweeps (`jobs/ssd_sweep.sh`, `jobs/leak_sweep.sh`) can be run again with the
+same command: settings with a result or already submitted (marker in
+`results/<dataset>/submitted/`) are skipped, and they stop cleanly when qsub
+refuses a job because of AQUA's per-user job limit. If a submitted job failed,
+delete its marker file and run the sweep again.
+
 ## If something goes wrong
 
 - Job output: `cat $(ls -t <scriptname>.o* | head -1)`, e.g. `train_cpp.o*`.
