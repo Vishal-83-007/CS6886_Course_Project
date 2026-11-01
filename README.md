@@ -1,5 +1,83 @@
 # Machine Unlearning using SNNs
 
+**CS6886 course project — Vishal Rajesh (EP23B042), Aditya Girish (EP23B048).**
+Post-hoc machine unlearning in a Diehl & Cook (2015) spiking network trained with
+unsupervised STDP: remove classes 6 and 9 (MNIST digits 6/9; Fashion-MNIST Shirt
+and Ankle boot), and a random 10% of their training images, without retraining,
+using only local plasticity information. Every method is compared with a **Gold**
+model retrained from scratch without the forgotten data.
+
+| | Method | Docs |
+|---|---|---|
+| A | Label-guided neuron silencing | [METHOD_A_MNIST.md](METHOD_A_MNIST.md), [METHOD_A_FASHION.md](METHOD_A_FASHION.md) |
+| B | Selective Synaptic Dampening with hypothetical-STDP importance | [METHOD_B_MNIST.md](METHOD_B_MNIST.md), [METHOD_B_FASHION.md](METHOD_B_FASHION.md), [METHOD_B_SUBSET.md](METHOD_B_SUBSET.md) |
+| C | Anti-STDP (C1) / LTD-only (C2) replay of the forget set | [METHOD_C_MNIST.md](METHOD_C_MNIST.md), [METHOD_C_FASHION.md](METHOD_C_FASHION.md), [METHOD_C_SUBSET.md](METHOD_C_SUBSET.md) |
+| D | Request-gated leak with retained-data replay | [METHOD_D_MNIST.md](METHOD_D_MNIST.md), [METHOD_D_FASHION.md](METHOD_D_FASHION.md) |
+
+The design of all four is in [Unlearning-Approaches-Implementation.md](Unlearning-Approaches-Implementation.md);
+Method B/D results are in [RESULTS_B_D.md](RESULTS_B_D.md); the report is [REPORT.pdf](REPORT.pdf).
+
+## Reproducing the results
+
+1. **Check out and install** (Python 3.10–3.12, a C++ compiler such as `g++`):
+
+   ```bash
+   git clone https://github.com/Vishal-83-007/CS6886_Course_Project.git
+   cd CS6886_Course_Project
+   pip install -r requirements-aqua-cpu.txt
+   ```
+
+   On a cluster without internet (we used IITM AQUA, PBS) follow
+   [AQUA_RUNBOOK.md](AQUA_RUNBOOK.md), which installs from an offline wheelhouse.
+
+2. **Data** (official IDX files, checksum-verified; `data/` is not in git):
+
+   ```bash
+   python prepare_fashion.py --dataset mnist --download
+   python prepare_fashion.py --dataset fashion --download
+   ```
+
+3. **Baselines and Gold models** (N = 800, 3 epochs over all 60,000 images,
+   compiled C++ backend; about 17 h (MNIST) / 21 h (Fashion) on one CPU core):
+
+   ```bash
+   python run_fashion.py --dataset mnist --n-excitatory 800 --validation-size 0 --backend cpp \
+     --out-dir results/mnist/baseline                                   # 89.37% test accuracy
+   python run_fashion.py --dataset mnist --n-excitatory 800 --validation-size 0 --backend cpp \
+     --request class6_9 --out-dir results/mnist/gold_class6_9           # Gold: 6 and 9 removed
+   python run_fashion.py --dataset fashion --n-excitatory 800 --validation-size 0 --backend cpp \
+     --weight-norm 39 --out-dir results/fashion/baseline                # 74.28%
+   python run_fashion.py --dataset fashion --n-excitatory 800 --validation-size 0 --backend cpp \
+     --weight-norm 39 --request class6_9 --out-dir results/fashion/gold_class6_9
+   ```
+
+   `--request sub6_9_p10` trains the Gold for random-subset forgetting. On AQUA:
+   `qsub -v DATASET=mnist,N=800,REQUEST=class6_9 jobs/train_cpp.cmd` (Fashion: add
+   `WEIGHT_NORM=39`). Trained weights are not stored in git (`*.npz` is ignored);
+   the A/C runners expect them under `gold_weights/` as described below.
+
+4. **Unlearning:** Method A/C commands are in the next section; Method B and D:
+
+   ```bash
+   python run_frozen.py importance --dataset mnist \
+     --weights results/mnist/baseline/baseline_weights.npz --out-dir results/mnist/importance   # I(D), ~7 h
+   python run_method_b.py --dataset mnist --baseline-dir results/mnist/baseline \
+     --importance results/mnist/importance/importance.npz --alpha 2 --lam 0.5 \
+     --gold-dir results/mnist/gold_class6_9 --out-dir results/mnist_method_b
+   python run_method_d.py --dataset mnist --baseline-dir results/mnist/baseline \
+     --gate neuron --leak 0.001 --replay-images 5000 \
+     --gold-dir results/mnist/gold_class6_9 --out-dir results/mnist_method_d
+   ```
+
+   Each run writes `summary.json` and, per evaluation, `metrics.json` with the
+   accuracies reported in [RESULTS_B_D.md](RESULTS_B_D.md). The hyper-parameter
+   sweeps, the relapse test and the subset experiment use the PBS scripts in
+   `jobs/` (`ssd_sweep.sh`, `leak_sweep.sh`, `repair_sweep.sh`, `subset_sweep.sh`);
+   `bash aqua/progress.sh` lists every result.
+
+5. **Tests:** `python -m unittest test_method_a test_method_c test_method_b test_method_d -v`.
+
+
 ## Running Method A and Method C from an external baseline
 
 The local implementation includes Method A (label-guided neuron silencing),
