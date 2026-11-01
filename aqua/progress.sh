@@ -9,7 +9,8 @@ module load anaconda3_2024.10 >/dev/null 2>&1
 python - <<'EOF'
 import json, glob, os, re
 import numpy as np
-runs = sorted(d for d in glob.glob('results/*/*') if os.path.isfile(os.path.join(d, 'config.json')))
+runs = sorted(d for d in glob.glob('results/*/*') + glob.glob('results/*/*/*')
+            if os.path.isfile(os.path.join(d, 'config.json')))
 if not runs:
     print('No runs yet under results/')
 for run in runs:
@@ -42,8 +43,28 @@ for run in runs:
     line = f'{name}   [{backend}]\n    status: {status}'
     if total:
         line += f'   images done: {done}/{total} ({100 * done / total:.1f}%)'
-    if os.path.exists(f'{run}/metrics.json'):
-        m = json.load(open(f'{run}/metrics.json'))
+    m = json.load(open(f'{run}/metrics.json')) if os.path.exists(f'{run}/metrics.json') else None
+    if m is not None and m.get('mode') == 'importance':
+        line += f"\n    importance from {m['n_images']} training images, {m['spikes_per_image']:.1f} spikes/image"
+        if m.get('importance_set') == 'forget':
+            line += f" (forgotten images of {m['forget']} only)"
+    elif m is not None and m.get('mode') == 'replay':
+        line += (f"\n    {m['gate']} gate: {m['gated_synapses']} synapses ({m['gated_neurons']} neurons), "
+                 f"gated weight {m['gated_weight_sum_before']:.0f} -> {m['gated_weight_sum_after']:.0f}, "
+                 f"other {m['ungated_weight_sum_before']:.0f} -> {m['ungated_weight_sum_after']:.0f}")
+    elif m is not None and m.get('mode') == 'evaluate':
+        for name, r in m['readouts'].items():
+            line += f"\n    {name}: {100 * r['accuracy']:.2f}% on {m['n_evaluation']} {m['eval_split']} images"
+            if 'retain_accuracy' in r:
+                line += f"   retained {100 * r['retain_accuracy']:.2f}%   removed {100 * r['forget_accuracy']:.2f}%"
+            f = m.get('forget_set', {}).get(name)
+            if f:
+                line += (f"\n        forgotten train {100 * f['forget_accuracy']:.2f}%   retained same-class train "
+                         f"{100 * f['retained_same_class_accuracy']:.2f}%   test same-class {100 * f['test_same_class_accuracy']:.2f}%"
+                         f"   test other classes {100 * f['test_other_class_accuracy']:.2f}%"
+                         f"\n        membership AUC: forgotten vs test {f['membership_auc_forget_vs_test']:.3f}   "
+                         f"retained vs test {f['membership_auc_retained_vs_test']:.3f}")
+    elif m is not None:
         line += f"\n    ACCURACY: {100 * m['accuracy']:.2f}% on {m['n_evaluation']} {m['evaluation_split']} images"
         if m.get('forget_class_accuracy') is not None:
             line += (f"\n    retained classes: {100 * m['retain_accuracy']:.2f}%   "
