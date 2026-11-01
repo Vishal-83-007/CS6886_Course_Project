@@ -43,7 +43,10 @@ BASE_URL = DATASETS['fashion']['urls'][0]
 # baseline = all training data; classK = Gold model retrained without every
 # training image of class K (K = 0..9); classK_L_... = without every training
 # image of several classes, listed in increasing order (e.g. class6_9);
-# random10 = without a fixed stratified random 10% of the training images.
+# random10 = without a fixed stratified random 10% of the training images;
+# subK_L_..._pP = without a fixed random P% of the training images of classes
+# K, L, ... (e.g. sub6_9_p10: random-subset forgetting inside classes 6 and 9;
+# the rest of those classes is kept).
 # REQUESTS lists the single-request names (used for prepared manifests);
 # valid_request() also accepts the multi-class names.
 REQUESTS = ('baseline',) + tuple(f'class{k}' for k in range(10)) + ('random10',)
@@ -61,11 +64,24 @@ def forget_classes(request):
     return classes
 
 
+def subset_request(request):
+    """'sub6_9_p10' -> ((6, 9), 10): a random 10% of the training images of 6 and 9; else None."""
+    match = re.fullmatch(r'sub(\d(?:_\d)*)_p(\d+)', request)
+    if not match:
+        return None
+    classes = tuple(int(c) for c in match.group(1).split('_'))
+    percent = int(match.group(2))
+    if list(classes) != sorted(set(classes)) or not 0 < percent < 100:
+        raise ValueError(f'{request}: list each class once, in increasing order, '
+                         'and give a percentage from 1 to 99 (e.g. sub6_9_p10)')
+    return classes, percent
+
+
 def valid_request(request):
     if request in ('baseline', 'random10'):
         return True
     try:
-        return bool(forget_classes(request))
+        return bool(forget_classes(request)) or subset_request(request) is not None
     except ValueError:
         return False
 CLASS_NAMES = ('T-shirt/top', 'Trouser', 'Pullover', 'Dress', 'Coat',
@@ -168,6 +184,11 @@ def make_manifest(labels, request='baseline', split_seed=42, validation_size=500
         rng = np.random.default_rng(split_seed + 2)
         forget = np.concatenate([rng.permutation(pool[labels[pool] == c])[
             :len(pool[labels[pool] == c]) // 10] for c in range(10)])
+    elif subset_request(request):
+        classes, percent = subset_request(request)
+        rng = np.random.default_rng(split_seed + 4)
+        forget = np.concatenate([rng.permutation(pool[labels[pool] == c])[
+            :len(pool[labels[pool] == c]) * percent // 100] for c in classes])
     else:
         forget = np.empty(0, dtype=np.int64)
     retain = np.setdiff1d(pool, forget)

@@ -23,6 +23,12 @@ evaluate
     read-outs: the model's own labels from all ten classes, its own labels
     from retained classes only, and optionally fixed labels from a file
     (e.g. the baseline's neuron_labels.npy).
+    With a subset request (--forget sub6_9_p10) the labelling images come from
+    that request's manifest, so the forgotten images are never used for labels,
+    and --forget-set also presents the forgotten training images D_f and an
+    equally large random sample of the RETAINED training images of the same
+    classes, and scores accuracy and a membership-inference AUC on each
+    (members: training images; non-members: test images of the same classes).
 
 Input encoding, presentation (350 ms + 150 ms rest) and the retry rule
 (< 5 spikes: boost rates by 32 Hz, up to 6 attempts) are the same as in
@@ -38,9 +44,12 @@ import time
 import numpy as np
 
 from .fashion_data import (balanced_ids, fingerprint, forget_classes, load_dataset,
-                           make_manifest, save_json, valid_request)
+                           make_manifest, save_json, subset_request, valid_request)
 
-STAGE_IMPORTANCE, STAGE_ASSIGN, STAGE_EVAL = 0, 1, 2
+# STAGE_TRAIN_EVAL: a TRAINING image that is scored (D_f and its retained
+# same-class reference); the compiled loop shows test images only for STAGE_EVAL.
+STAGE_IMPORTANCE, STAGE_ASSIGN, STAGE_EVAL, STAGE_TRAIN_EVAL = 0, 1, 2, 3
+GROUP_FORGET, GROUP_RETAINED_SAME = 1, 2
 
 
 def arguments(argv=None):
@@ -64,6 +73,10 @@ def arguments(argv=None):
     p.add_argument('--train-limit', type=int, default=0,
                    help='importance: balanced subset of training images (multiple of 10); '
                         '0 = all 60,000')
+    p.add_argument('--importance-set', choices=('train', 'forget'), default='train',
+                   help="importance: 'train' = all training images (I(D) and per-class); "
+                        "'forget' = only the forgotten images of the subset request --forget "
+                        "(I(D_f) for random-subset forgetting)")
     # evaluate
     p.add_argument('--eval-split', choices=('tune', 'final', 'all'), default='tune',
                    help="evaluate: 'tune' = fixed balanced 5,000 test images (500 per class) "
@@ -73,14 +86,20 @@ def arguments(argv=None):
     p.add_argument('--assign-per-class', type=int, default=500,
                    help='evaluate: labelling images per class (same IDs as training when 500)')
     p.add_argument('--forget', default='',
-                   help='evaluate: removed classes, e.g. class6_9; adds retained/removed '
-                        'accuracies and the retained-only read-out')
+                   help='evaluate: removed classes, e.g. class6_9 (adds retained/removed '
+                        'accuracies and the retained-only read-out), or a random subset, e.g. '
+                        'sub6_9_p10 (labelling images exclude the forgotten ones)')
+    p.add_argument('--forget-set', action='store_true',
+                   help='evaluate, subset request only: also score the forgotten training '
+                        'images and a same-size sample of retained images of the same classes')
     p.add_argument('--fixed-labels', default='',
                    help="evaluate: neuron_labels.npy to score as a fixed read-out "
                         "(e.g. the baseline's labels for an unlearned model)")
     a = p.parse_args(argv)
-    if a.forget and not forget_classes(a.forget):
-        p.error('--forget must look like class6 or class6_9')
+    if a.forget and not valid_request(a.forget) or a.forget in ('baseline', 'random10'):
+        p.error('--forget must look like class6, class6_9 or sub6_9_p10')
+    if (a.forget_set or a.importance_set == 'forget') and not subset_request(a.forget):
+        p.error('--forget-set and --importance-set forget need a subset --forget, e.g. sub6_9_p10')
     if a.train_limit % 10 or a.eval_limit % 10:
         p.error('--train-limit and --eval-limit must be multiples of ten')
     a.data_dir = a.data_dir or f'data/{a.dataset}'
@@ -161,18 +180,36 @@ def run(a):
     ns = 784 * n_e
 
     rng = np.random.default_rng(np.random.SeedSequence([a.poisson_seed, 911]))
+    group = None
     if a.mode == 'importance':
-        manifest = make_manifest(train_y, 'baseline', a.split_seed, 0, 1, a.train_limit)
-        ids = rng.permutation(manifest['train'])
+        if a.importance_set == 'forget':
+            ids = rng.permutation(make_manifest(train_y, a.forget, a.split_seed, 0, 1)['forget'])
+        else:
+            manifest = make_manifest(train_y, 'baseline', a.split_seed, 0, 1, a.train_limit)
+            ids = rng.permutation(manifest['train'])
         stage = np.full(len(ids), STAGE_IMPORTANCE, np.uint8)
     else:
-        assignment = make_manifest(train_y, 'baseline', a.split_seed, 0, a.assign_per_class)['assignment']
+        # A subset request labels neurons without its forgotten images.
+        label_request = a.forget if a.forget and subset_request(a.forget) else 'baseline'
+        subset_manifest = make_manifest(train_y, label_request, a.split_seed, 0, a.assign_per_class)
+        assignment = subset_manifest['assignment']
         evaluation = test_split(test_y, a.eval_split, a.split_seed)
         if a.eval_limit:
             evaluation = np.sort(balanced_ids(test_y, evaluation, a.eval_limit // 10, a.split_seed + 6))
-        ids = np.concatenate([assignment, evaluation])
+        extra = np.empty(0, np.int64)
+        group = np.zeros(0, np.uint8)
+        if a.forget_set:
+            forget = np.sort(subset_manifest['forget'])
+            same = np.setdiff1d(np.flatnonzero(np.isin(train_y, subset_request(a.forget)[0])), forget)
+            same = np.sort(np.random.default_rng(a.split_seed + 7).permutation(same)[:len(forget)])
+            extra = np.concatenate([forget, same])
+            group = np.concatenate([np.full(len(forget), GROUP_FORGET, np.uint8),
+                                    np.full(len(same), GROUP_RETAINED_SAME, np.uint8)])
+        ids = np.concatenate([assignment, evaluation, extra])
         stage = np.concatenate([np.full(len(assignment), STAGE_ASSIGN, np.uint8),
-                                np.full(len(evaluation), STAGE_EVAL, np.uint8)])
+                                np.full(len(evaluation), STAGE_EVAL, np.uint8),
+                                np.full(len(extra), STAGE_TRAIN_EVAL, np.uint8)])
+        group = np.concatenate([np.zeros(len(assignment) + len(evaluation), np.uint8), group])
     labels_of = np.where(stage == STAGE_EVAL, test_y[np.minimum(ids, len(test_y) - 1)], train_y[ids])
 
     root = Path(a.out_dir).resolve()
@@ -187,7 +224,8 @@ def run(a):
                   schedule_sha256=fingerprint((ids, stage)), n_excitatory=n_e,
                   source_sha256=hashlib.sha256(code).hexdigest(), backend='cpp', schema=1)
     save_json(root / 'config.json', config)
-    np.savez(root / 'schedule.npz', ids=ids, stage=stage, labels=labels_of)
+    np.savez(root / 'schedule.npz', ids=ids, stage=stage, labels=labels_of,
+             **({} if group is None else dict(group=group)))
     save_json(root / 'status.json', dict(status='building', backend='cpp'))
 
     set_device('cpp_standalone', build_on_run=False)
@@ -345,7 +383,7 @@ def run(a):
     if a.mode == 'importance':
         summarize_importance(a, root, counts, stage, labels_of, timing, weights, n_e)
     else:
-        summarize_evaluation(a, root, counts, stage, labels_of, ids, timing, n_e)
+        summarize_evaluation(a, root, counts, stage, labels_of, ids, timing, n_e, group)
     (root / 'counts.bin').unlink()
     save_json(root / 'status.json', dict(status='complete'))
     return 0
@@ -365,7 +403,8 @@ def summarize_importance(a, root, counts, stage, labels_of, timing, weights, n_e
     for name in ('importance_sumsq.bin', 'importance_sum.bin'):
         (root / name).unlink()
     i_d = sumsq.sum(axis=0) / class_count.sum()
-    result = dict(mode='importance', n_images=int(len(stage)),
+    result = dict(mode='importance', importance_set=a.importance_set, forget=a.forget,
+                  n_images=int(len(stage)),
                   spikes_per_image=float(counts.sum(axis=1).mean()),
                   importance_D_mean=float(i_d.mean()), importance_D_max=float(i_d.max()),
                   importance_D_zero_fraction=float(np.mean(i_d == 0)), **timing)
@@ -373,11 +412,42 @@ def summarize_importance(a, root, counts, stage, labels_of, timing, weights, n_e
     print(json.dumps(result, indent=2), flush=True)
 
 
-def summarize_evaluation(a, root, counts, stage, labels_of, ids, timing, n_e):
+def class_scores(counts, neuron_labels):
+    """Mean count of each class's neurons (-inf for a class without neurons)."""
+    scores = np.full((len(counts), 10), -np.inf)
+    for c in range(10):
+        mask = neuron_labels == c
+        if np.any(mask):
+            scores[:, c] = counts[:, mask].mean(axis=1)
+    return scores
+
+
+def true_class_margin(counts, neuron_labels, truth):
+    """Score of the true class minus the best other class (membership-attack feature)."""
+    scores = class_scores(counts, neuron_labels)
+    scores = np.where(np.isfinite(scores), scores, -1e9)
+    true = scores[np.arange(len(truth)), truth]
+    scores[np.arange(len(truth)), truth] = -np.inf
+    return true - scores.max(axis=1)
+
+
+def auc(positive, negative):
+    """P(score of a positive > score of a negative), ties counted half (Mann-Whitney)."""
+    values = np.concatenate([positive, negative])
+    order = np.argsort(values, kind='mergesort')
+    _, inverse, count = np.unique(values[order], return_inverse=True, return_counts=True)
+    ranks = np.empty(len(values))
+    ranks[order] = (np.cumsum(count) - (count - 1) / 2)[inverse]
+    n_p, n_n = len(positive), len(negative)
+    return float((ranks[:n_p].sum() - n_p * (n_p + 1) / 2) / (n_p * n_n))
+
+
+def summarize_evaluation(a, root, counts, stage, labels_of, ids, timing, n_e, group=None):
     assign_counts, eval_counts = counts[stage == STAGE_ASSIGN], counts[stage == STAGE_EVAL]
     assign_labels, truth = labels_of[stage == STAGE_ASSIGN], labels_of[stage == STAGE_EVAL]
     removed = list(forget_classes(a.forget)) if a.forget else []
     retained = [c for c in range(10) if c not in removed]
+    subset = subset_request(a.forget) if a.forget else None
     readouts = {'own_labels_all_classes': class_labels(assign_counts, assign_labels, range(10))}
     if removed:
         readouts['own_labels_retained_classes'] = class_labels(assign_counts, assign_labels, retained)
@@ -392,6 +462,31 @@ def summarize_evaluation(a, root, counts, stage, labels_of, ids, timing, n_e):
     saved = dict(assignment_ids=ids[stage == STAGE_ASSIGN], assignment_counts=assign_counts,
                  assignment_labels=assign_labels, evaluation_ids=ids[stage == STAGE_EVAL],
                  evaluation_counts=eval_counts, truth=truth)
+    if group is not None and np.any(stage == STAGE_TRAIN_EVAL):
+        train_counts = counts[stage == STAGE_TRAIN_EVAL]
+        train_truth = labels_of[stage == STAGE_TRAIN_EVAL]
+        train_group = group[stage == STAGE_TRAIN_EVAL]
+        same_test = np.isin(truth, subset[0])
+        saved.update(train_eval_ids=ids[stage == STAGE_TRAIN_EVAL], train_eval_counts=train_counts,
+                     train_eval_truth=train_truth, train_eval_group=train_group)
+        result['forget_set'] = {}
+        for name, neuron_labels in readouts.items():
+            train_pred, _ = predict(train_counts, neuron_labels)
+            test_pred, _ = predict(eval_counts[same_test], neuron_labels)
+            margin_train = true_class_margin(train_counts, neuron_labels, train_truth)
+            margin_test = true_class_margin(eval_counts[same_test], neuron_labels, truth[same_test])
+            f, r_ = train_group == GROUP_FORGET, train_group == GROUP_RETAINED_SAME
+            result['forget_set'][name] = dict(
+                n_forget=int(f.sum()), n_retained_same=int(r_.sum()), n_test_same=int(same_test.sum()),
+                forget_accuracy=float(np.mean(train_pred[f] == train_truth[f])),
+                retained_same_class_accuracy=float(np.mean(train_pred[r_] == train_truth[r_])),
+                test_same_class_accuracy=float(np.mean(test_pred == truth[same_test])),
+                test_other_class_accuracy=float(np.mean(
+                    predict(eval_counts[~same_test], neuron_labels)[0] == truth[~same_test])),
+                membership_auc_forget_vs_test=auc(margin_train[f], margin_test),
+                membership_auc_retained_vs_test=auc(margin_train[r_], margin_test),
+                forget_mean_spikes=float(train_counts[f].sum(axis=1).mean()),
+                test_same_mean_spikes=float(eval_counts[same_test].sum(axis=1).mean()))
     for name, neuron_labels in readouts.items():
         predictions, ties = predict(eval_counts, neuron_labels)
         r = score(predictions, ties, truth, eval_counts, removed)

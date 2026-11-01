@@ -13,13 +13,14 @@
 #   EVAL_LIMIT        images used to measure accuracy (validation or test),
 #                     multiple of 10; 0 = all                  (default 0)
 #   ASSIGN_PER_CLASS  training images per class used to label neurons (default 500)
-#   REQUEST           baseline | classK | classK_L_... | random10 (default baseline)
+#   REQUEST           baseline | classK | classK_L_... | random10 | subK_L_pP (default baseline)
 #                     classK: Gold model, trained from scratch without any
 #                     training image of class K (also not used for labels);
 #                     classK_L_...: same without several classes, in increasing
 #                     order joined by _ (e.g. class6_9; a comma would split the
 #                     qsub -v list); random10: without a fixed random 10% of
-#                     each class
+#                     each class; subK_L_pP: without a fixed random P% of the
+#                     training images of classes K, L (e.g. sub6_9_p10)
 #   SEED              model seed                                (default 0)
 #   WEIGHT_NORM       0 = off; e.g. 78: before every training presentation
 #                     scale each neuron's input weights to sum to 78 (Diehl &
@@ -54,8 +55,16 @@ REQUEST="${REQUEST:-baseline}"
 SEED="${SEED:-0}"
 WEIGHT_NORM="${WEIGHT_NORM:-0}"
 INPUT_TOTAL_HZ="${INPUT_TOTAL_HZ:-0}"
-request_help="REQUEST must be baseline, random10, classK (K = 0..9) or several classes in increasing order joined by _, e.g. class6_9 (got '$REQUEST')"
-if [[ "$REQUEST" =~ ^class[0-9](_[0-9])*$ ]]; then
+request_help="REQUEST must be baseline, random10, classK (K = 0..9), several classes in increasing order joined by _ (e.g. class6_9), or subK_L_pP for a random P% of those classes (e.g. sub6_9_p10) (got '$REQUEST')"
+if [[ "$REQUEST" =~ ^sub[0-9](_[0-9])*_p([0-9]+)$ ]]; then
+    percent="${BASH_REMATCH[2]}"
+    [ "$percent" -ge 1 ] && [ "$percent" -le 99 ] || settings_error "$request_help"
+    previous=-1; classes="${REQUEST%_p*}"
+    for class in ${classes//[!0-9]/ }; do
+        [ "$class" -gt "$previous" ] || settings_error "$request_help"
+        previous=$class
+    done
+elif [[ "$REQUEST" =~ ^class[0-9](_[0-9])*$ ]]; then
     previous=-1; removed=0
     for class in ${REQUEST//[!0-9]/ }; do
         [ "$class" -gt "$previous" ] || settings_error "$request_help"

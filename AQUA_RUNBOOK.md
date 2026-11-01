@@ -198,15 +198,70 @@ are relative to the project.
    all input synapses of neurons the baseline labelled with a removed class;
    GATE=synapse: I(Df) > ALPHA * I(D) from the importance passes. theta frozen
    by default (THETA=updated as the ablation). WEIGHT_NORM=39 for the Fashion
-   baseline (as in its training) is applied only to neurons with no gated
-   synapse, so it cannot undo the leak; 0 for MNIST. Each job replays and then
+   baseline (as in its training), 0 for MNIST; it never touches gated
+   synapses, so it cannot undo the leak. Neurons with no gated synapse are
+   normalised to 39 as in training; partly gated neurons keep the sum of their
+   ungated weights at its baseline value (NORM_GATED=partial, default; run
+   names end in `pg`). The first design (NORM_GATED=none) left partly gated
+   neurons unnormalised; with the synapse gate on Fashion (175 such neurons,
+   theta frozen) retained accuracy collapsed to 12-51%. Each job replays and then
    evaluates (tuning half, baseline fixed labels + own labels).
 
-Sweeps (`jobs/ssd_sweep.sh`, `jobs/leak_sweep.sh`) can be run again with the
+Improvements on top of B (both optional):
+- Protection of shared synapses: `PROTECTS="10 20 40"` in `jobs/ssd_sweep.sh`
+  (`dampen.py --protect-top P`) never dampens the P% of synapses with the
+  highest retain importance I(D_r). Note I(D_f)/I(D) = 1/(p + (1-p) I(D_r)/I(D_f))
+  with p = |D_f|/|D|, a monotone function of I(D_f)/I(D_r): using I(D_r) in the
+  ratio instead of I(D) would select the same synapses (alpha' =
+  (1-p)/(1/alpha - p)), so only an extra condition like this can spare
+  synapses that the retained classes also rely on.
+- Repair replay: `jobs/repair_sweep.sh` (replay_cpp.cmd with GATE=none and
+  START_WEIGHTS=<dampened .npz>) replays R retained images with STDP on and no
+  leak, then evaluates. With WEIGHT_NORM=39 every neuron keeps the weight sum
+  it has in the START weights (NORM_TARGET=start). The first version
+  normalised every neuron to 39, which rescaled the SSD-dampened neurons back
+  up and undid the unlearning on Fashion (removed accuracy back to 57-58%).
+  Why repair is needed: in the Fashion baseline, Sandal/Sneaker neurons fire
+  1.2 spikes per Ankle-boot image (0.16 of their own-class response) because
+  boot neurons win those images; in the Gold model they fire 11.2 (1.30x).
+  Dampening the boot neurons cannot broaden the footwear neurons; only
+  learning on the retained data can.
+
+Sweeps (`jobs/ssd_sweep.sh`, `jobs/leak_sweep.sh`, `jobs/repair_sweep.sh`) can be run again with the
 same command: settings with a result or already submitted (marker in
 `results/<dataset>/submitted/`) are skipped, and they stop cleanly when qsub
 refuses a job because of AQUA's per-user job limit. If a submitted job failed,
 delete its marker file and run the sweep again.
+
+## Random-subset forgetting (stretch goal: `sub6_9_p10`)
+
+`REQUEST`/`FORGET=sub6_9_p10` = a fixed random 10% of the training images of
+classes 6 and 9 (MNIST 591 + 594 = 1,185 images, Fashion 600 + 600 = 1,200).
+The rest of 6 and 9 stays in the training set. The set is the same in every
+job (seeded by the split seed), and it is never used to label neurons.
+
+1. Gold: `qsub -v DATASET=mnist,N=800,REQUEST=sub6_9_p10 jobs/train_cpp.cmd`
+   (Fashion: add `WEIGHT_NORM=39`). About 14 h (MNIST) / 17 h (Fashion).
+2. Importance over the forgotten images only (I(D_f), minutes):
+   `qsub -v DATASET=mnist,MODEL=<baseline run>,FORGET=sub6_9_p10 jobs/importance_cpp.cmd`.
+3. Evaluation with `FORGET=sub6_9_p10,FORGET_SET=1,EVAL_SPLIT=all`: besides the
+   test set it scores the forgotten training images D_f and an equally large
+   random sample of RETAINED training images of 6 and 9, and a membership AUC
+   (feature: true-class score minus the best other class; members = those
+   training images, non-members = test images of 6 and 9). 0.5 = no
+   membership signal. Use the model's own `neuron_labels.npy` as FIXED_LABELS
+   for Gold, the baseline's for the baseline and for SSD.
+4. SSD sweep: `jobs/subset_sweep.sh` (alpha 2 5 10 25, lambda 1). The JSON
+   next to each dampened file reports the correlation between I(D_f) and the
+   importance of the whole classes 6 and 9, and how many synapses the
+   class-level importance would select at the same alpha.
+
+What to expect: a Gold model trained without a random part of a class still
+recognises those images through the rest of the class (Foster et al.,
+random forgetting: retrain D_f accuracy 94.1%). Good unlearning therefore
+matches Gold's D_f accuracy and membership AUC, not 0%. Method D's neuron gate
+is class-level by construction (it would remove all of 6 and 9), and D's
+synapse gate at full leak equals SSD with lambda = 0, so only B is run.
 
 ## If something goes wrong
 

@@ -21,8 +21,16 @@ evolve as in training.
 
 Weight normalisation (Fashion baseline was trained with WEIGHT_NORM=39):
 with ``--weight-norm`` > 0 it is applied before every presentation, as in
-training, but ONLY to neurons without any gated synapse; normalising a
-gated neuron would rescale its leaked weights back up.
+training, but never to gated synapses (that would rescale the leaked weights
+back up). Per neuron, the UNGATED synapses are rescaled so that their sum is
+    neuron with no gated synapse:      --weight-norm (exactly as in training)
+    neuron with some gated synapses:   its ungated sum in the baseline
+                                       (--norm-gated partial, default), or
+                                       not normalised (--norm-gated none)
+    neuron whose synapses are all gated: not normalised
+``none`` was the first design: on Fashion with the synapse gate, the 175
+partly gated neurons then had no normalisation at all, their ungated weights
+grew under STDP with theta frozen, and retained accuracy collapsed.
 
 Writes replayed_weights.npz in the baseline_weights.npz format, ready for
 ``run_frozen.py evaluate``.
@@ -47,7 +55,8 @@ def arguments(argv=None):
     p.add_argument('--weights', required=True, help='baseline_weights.npz of the trained baseline')
     p.add_argument('--labels', required=True, help='neuron_labels.npy of the trained baseline')
     p.add_argument('--forget', required=True, help='removed classes, e.g. class6_9')
-    p.add_argument('--gate', choices=('neuron', 'synapse'), required=True)
+    p.add_argument('--gate', choices=('neuron', 'synapse', 'none'), required=True,
+                   help="none: no leak at all (repair replay, e.g. after SSD dampening)")
     p.add_argument('--importance', nargs='*', default=[],
                    help='synapse gate: importance.npz of one or more passes (averaged)')
     p.add_argument('--alpha', type=float, default=2.0, help='synapse gate: I(Df) > alpha * I(D)')
@@ -57,6 +66,14 @@ def arguments(argv=None):
     p.add_argument('--theta', choices=('frozen', 'updated'), default='frozen')
     p.add_argument('--weight-norm', type=float, default=0,
                    help='0 = off; else as in training, for ungated neurons only')
+    p.add_argument('--norm-target', choices=('weight-norm', 'start'), default='weight-norm',
+                   help="with --weight-norm: 'weight-norm' normalises ungated neurons to that value "
+                        "(as in training); 'start' keeps EVERY neuron's ungated weight sum at its "
+                        "value in the start weights, so a previous dampening (e.g. SSD before a "
+                        "repair replay) is never rescaled back up")
+    p.add_argument('--norm-gated', choices=('partial', 'none'), default='partial',
+                   help='with --weight-norm: keep the ungated weight sum of partly gated '
+                        'neurons at its baseline value (partial) or leave them unnormalised')
     p.add_argument('--input-total-hz', type=float, default=0, help='same as training')
     p.add_argument('--poisson-seed', type=int, default=3, help='input spikes and replay order')
     p.add_argument('--split-seed', type=int, default=42)
@@ -77,6 +94,8 @@ def arguments(argv=None):
 
 def make_gate(a, n_e):
     removed = list(forget_classes(a.forget))
+    if a.gate == 'none':
+        return np.zeros(784 * n_e, dtype=bool)
     if a.gate == 'neuron':
         labels = np.load(a.labels)
         if labels.shape != (n_e,):
@@ -111,7 +130,18 @@ def run(a):
         raise ValueError(f'{a.weights}: unexpected synapse order or size')
     gate = make_gate(a, n_e)
     gated_neuron = gate.reshape(784, n_e).any(axis=0)
-    normalise = (~gated_neuron).astype(np.uint8)
+    # Per-neuron target for the sum of its UNGATED weights (0 = do not normalise).
+    w0 = weights['w'].reshape(784, n_e)
+    ungated_sum = np.where(gate.reshape(784, n_e), 0.0, w0).sum(axis=0)
+    all_gated = gate.reshape(784, n_e).all(axis=0)
+    norm_target = np.zeros(n_e)
+    if a.weight_norm > 0:
+        norm_target[~gated_neuron] = a.weight_norm
+        if a.norm_gated == 'partial':
+            partly = gated_neuron & ~all_gated
+            norm_target[partly] = ungated_sum[partly]
+        if a.norm_target == 'start':
+            norm_target[~all_gated] = ungated_sum[~all_gated]
 
     retain = make_manifest(train_y, a.forget, a.split_seed, 0, 1)['train']
     if a.replay_images > len(retain):
@@ -133,7 +163,7 @@ def run(a):
                   replay_ids_sha256=fingerprint((ids,)), n_excitatory=n_e, backend='cpp',
                   source_sha256=hashlib.sha256(code).hexdigest(), mode='replay', schema=1)
     save_json(root / 'config.json', config)
-    np.savez(root / 'schedule.npz', ids=ids, gate=gate, normalised_neurons=normalise)
+    np.savez(root / 'schedule.npz', ids=ids, gate=gate, norm_target=norm_target)
     save_json(root / 'status.json', dict(status='building', backend='cpp'))
 
     set_device('cpp_standalone', build_on_run=False)
@@ -179,7 +209,7 @@ def run(a):
     train_x.tofile(binary / 'train.bin')
     ids.astype('<i8').tofile(binary / 'ids.bin')
     gate.astype(np.uint8).tofile(binary / 'gate.bin')
-    normalise.tofile(binary / 'normalise.bin')
+    norm_target.astype('<f8').tofile(binary / 'norm_target.bin')
     quoted = lambda path: json.dumps(str(path))
     rates = host(components['input'], 'rates')
     mon = host(components['exc_monitor'], 'count')
@@ -200,19 +230,23 @@ def run(a):
     }};
     auto replay_train = load_bytes({quoted(binary / 'train.bin')}, {train_x.size});
     auto replay_gate = load_bytes({quoted(binary / 'gate.bin')}, {ns});
-    auto replay_normalise = load_bytes({quoted(binary / 'normalise.bin')}, {n_e});
+    std::vector<double> replay_target({n_e});
+    std::ifstream replay_target_file({quoted(binary / 'norm_target.bin')}, std::ios::binary);
+    if(!replay_target_file.read(reinterpret_cast<char*>(replay_target.data()), {n_e} * sizeof(double)))
+        throw std::runtime_error("Cannot read normalisation targets");
     std::vector<int64_t> replay_ids({n});
     std::ifstream replay_id_file({quoted(binary / 'ids.bin')}, std::ios::binary);
     if(!replay_id_file.read(reinterpret_cast<char*>(replay_ids.data()), {n} * sizeof(int64_t)))
         throw std::runtime_error("Cannot read replay ids");
     std::vector<double> replay_colsum({n_e});
-    auto replay_normalize = [&]() {{   // training normalisation, ungated neurons only
+    auto replay_normalize = [&]() {{   // rescale UNGATED synapses to the per-neuron target
         std::fill(replay_colsum.begin(), replay_colsum.end(), 0.0);
-        for(size_t k = 0; k < {ns}; ++k) replay_colsum[{post}[k]] += {w}[k];
+        for(size_t k = 0; k < {ns}; ++k)
+            if(!replay_gate[k]) replay_colsum[{post}[k]] += {w}[k];
         for(size_t k = 0; k < {ns}; ++k) {{
             const int j = {post}[k];
-            if(replay_normalise[j] && replay_colsum[j] > 0)
-                {w}[k] = std::min({w}[k] * ({a.weight_norm!r} / replay_colsum[j]), {w_max}[k]);
+            if(!replay_gate[k] && replay_target[j] > 0 && replay_colsum[j] > 0)
+                {w}[k] = std::min({w}[k] * (replay_target[j] / replay_colsum[j]), {w_max}[k]);
         }}
     }};
     long long replay_attempts[6] = {{0, 0, 0, 0, 0, 0}};
@@ -281,6 +315,9 @@ def run(a):
     old_w = weights['w']
     col = lambda v: v.reshape(784, n_e).sum(axis=0)
     result = dict(mode='replay', gate=a.gate, leak=a.leak, replay_images=n, theta=a.theta,
+                  norm_gated=a.norm_gated if a.weight_norm > 0 else None,
+                  partly_gated_neurons=int((gated_neuron & ~all_gated).sum()),
+                  norm_target_mode=a.norm_target if a.weight_norm > 0 else None,
                   gated_synapses=int(gate.sum()), gated_fraction=float(gate.mean()),
                   gated_neurons=int(gated_neuron.sum()),
                   leak_factor_if_untouched=keep ** n,

@@ -9,7 +9,11 @@
 # read-outs (src/frozen.py): own labels from all classes, own labels from the
 # retained classes only, and optionally fixed labels from a file.
 #   WEIGHTS       npz in baseline_weights.npz format                      (required)
-#   FORGET        removed classes, e.g. class6_9                          (default none)
+#   FORGET        removed classes, e.g. class6_9, or a random subset, e.g. sub6_9_p10
+#                 (labelling images then exclude the forgotten ones)      (default none)
+#   FORGET_SET    1 = also score the forgotten training images and an equal sample of
+#                 retained same-class training images, with membership AUCs
+#                 (subset FORGET only)                                    (default 0)
 #   FIXED_LABELS  neuron_labels.npy to score as a fixed read-out          (default none)
 #   EVAL_SPLIT    tune (500/class, for choosing settings) | final | all   (default tune)
 #   EVAL_LIMIT    balanced subset of the split for quick checks; 0 = all  (default 0)
@@ -19,13 +23,15 @@
 POISSON_SEED="${POISSON_SEED:-0}"
 EVAL_SPLIT="${EVAL_SPLIT:-tune}"
 EVAL_LIMIT="${EVAL_LIMIT:-0}"
+FORGET_SET="${FORGET_SET:-0}"
 source "${PBS_O_WORKDIR:?Submit with qsub from the project folder}/jobs/frozen_common.sh"
 [ -f "${WEIGHTS:-}" ] || frozen_error "WEIGHTS must be an existing .npz file (got '${WEIGHTS:-}')"
 case "$EVAL_SPLIT" in tune|final|all) ;; *) frozen_error "EVAL_SPLIT must be tune, final or all" ;; esac
 [[ "$EVAL_LIMIT" =~ ^[0-9]+$ ]] && [ $((EVAL_LIMIT % 10)) -eq 0 ] || frozen_error "EVAL_LIMIT must be a multiple of 10"
 if [ -n "${FORGET:-}" ]; then
-    [[ "$FORGET" =~ ^class[0-9](_[0-9])*$ ]] || frozen_error "FORGET must look like class6 or class6_9"
+    [[ "$FORGET" =~ ^class[0-9](_[0-9])*$|^sub[0-9](_[0-9])*_p[0-9]+$ ]] || frozen_error "FORGET must look like class6, class6_9 or sub6_9_p10"
 fi
+case "$FORGET_SET" in 0) ;; 1) [[ "${FORGET:-}" == sub* ]] || frozen_error "FORGET_SET=1 needs a subset FORGET, e.g. sub6_9_p10" ;; *) frozen_error "FORGET_SET must be 0 or 1" ;; esac
 [ -z "${FIXED_LABELS:-}" ] || [ -f "$FIXED_LABELS" ] || frozen_error "FIXED_LABELS file not found: $FIXED_LABELS"
 if [ -z "${NAME:-}" ]; then
     NAME="$(basename "$(dirname "$WEIGHTS")")"
@@ -38,4 +44,5 @@ echo "Evaluate $WEIGHTS -> $out"
     --weights "$WEIGHTS" --eval-split "$EVAL_SPLIT" --eval-limit "$EVAL_LIMIT" \
     --poisson-seed "$POISSON_SEED" --input-total-hz "$INPUT_TOTAL_HZ" \
     ${FORGET:+--forget "$FORGET"} ${FIXED_LABELS:+--fixed-labels "$FIXED_LABELS"} \
+    $( [ "$FORGET_SET" = 1 ] && echo --forget-set ) \
     --out-dir "$out" 2>&1 | tee "$out.log"
