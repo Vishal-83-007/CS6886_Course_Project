@@ -333,18 +333,3 @@ Diehl & Cook paper's numbers as if they were yours.
 - `receptive_fields.png` — visualization of learned digit prototypes
   (should look like Fig. 2A of Diehl & Cook / Fig. 4 of ASP once trained
   on real MNIST)
-
-## Original Phase 2 proposal (historical planning notes)
-
-The importance-based unlearning method described in the project proposal:
-- `Δw_ij(x)` hypothetical STDP updates without applying them (plasticity
-  frozen, update computed and discarded) — needs a variant of the
-  training loop that computes but doesn't apply `w = clip(...)`
-- `I_ij(D)` and `I_ij(D_f)` importance accumulation (mean squared
-  hypothetical update)
-- Forget-specificity ratio `R_ij` and synapse selection/dampening
-- Comparison baselines: mean pre/post activity, product of pre/post
-  firing, |Δw|, (Δw)²
-
-This will load `baseline_weights.npz` rather than retraining from
-scratch.
