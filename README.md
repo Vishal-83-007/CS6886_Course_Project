@@ -1,5 +1,111 @@
 # Machine Unlearning using SNNs
 
+## Running Method A and Method C from an external baseline
+
+The local implementation includes Method A (label-guided neuron silencing),
+Method C (C1/C2 replay), and CSV-subset Method C on MNIST and Fashion-MNIST.
+The older baseline-development notes below describe the initial training work.
+See [METHOD_A_MNIST.md](METHOD_A_MNIST.md),
+[METHOD_A_FASHION.md](METHOD_A_FASHION.md),
+[METHOD_C_MNIST.md](METHOD_C_MNIST.md),
+[METHOD_C_FASHION.md](METHOD_C_FASHION.md), and
+[METHOD_C_SUBSET.md](METHOD_C_SUBSET.md) for the individual protocols.
+
+Use Python 3.10–3.12 with `requirements-aqua-cpu.txt` and a C++ compiler for
+compiled replay/evaluation. Run commands from the repository root. Model
+weights and datasets are supplied separately; they are not installed by pip.
+
+Pass the **baseline directory**, not a single weights file, using
+`--baseline-dir /absolute/path/to/baseline`. The directory must contain:
+
+```text
+baseline/
+  config.json             # original training settings, dataset fingerprint, request=baseline
+  baseline_weights.npz    # weights, thresholds, and connectivity
+  neuron_labels.npy       # saved original neuron-to-class assignments
+  manifest.npz            # original training/validation IDs; required by Method C
+```
+
+These runners expect the checkpoint format produced by `run_fashion.py`
+(which supports both datasets). An isolated weights array or the older
+`run_baseline.py` output without config/manifest is insufficient. The checkpoint
+must match the chosen dataset. Paths may be absolute or relative to the current
+working directory. Always choose a new output directory outside the baseline
+and Gold directories.
+
+Both Fashion entry points and their PBS jobs default to `class6_9` (shirt and
+ankle boot); MNIST defaults to digits 6 and 9. Use `--request class6` explicitly
+for shirt-only deletion.
+
+### Gold is optional comparison data
+
+Gold is an independently retrained reference, not an input to the silencing or
+replay update rule. The full runners also evaluate the baseline and edited
+model, and evaluate Gold / record disagreements when Gold is supplied.
+For historical joint-deletion workflows, omitting both Gold options selects
+`gold_weights/mnist_class6_9` or `gold_weights/fashion_class6_9_wn39` automatically.
+**Pass `--no-gold` when those comparison artifacts are unavailable.**
+Alternatively, pass `--gold-dir /absolute/path/to/matched_gold`; it must match the
+baseline training settings and exact deletion request. `--gold-dir` and
+`--no-gold` are mutually exclusive. Gold is not trained by these commands.
+
+Method A can prepare its intervention using only the baseline directory and
+request; this does not run inference or need image data:
+
+```bash
+python3 run_method_a_fashion.py \
+  --baseline-dir /absolute/path/to/fashion_baseline \
+  --request class6_9 --no-gold --prepare-only \
+  --out-dir results/fashion_a_prepared
+```
+
+The saved Method A checkpoint includes `intervention.npz`. The inference adapter
+must apply it; using the copied weights alone does not silence neurons.
+
+Method A evaluation also requires the official dataset. Method C unlearning
+requires the original training manifest and forget images for replay, in addition
+to the baseline. Its current runner loads and validates the full official dataset
+even with `--skip-evaluation`; that flag skips accuracy evaluation, not data loading.
+Place the official checksum-verified IDX gzip files in the selected data directory.
+The runners do not download them implicitly.
+
+Examples without Gold (the first command evaluates baseline/Method A; the second
+performs replay and saves edited checkpoints without accuracy evaluation):
+
+```bash
+python3 run_method_a_fashion.py \
+  --baseline-dir /absolute/path/to/fashion_baseline \
+  --data-dir /absolute/path/to/data/fashion \
+  --request class6_9 --no-gold \
+  --out-dir results/fashion_a_evaluated
+
+python3 run_method_c_fashion.py \
+  --baseline-dir /absolute/path/to/fashion_baseline \
+  --data-dir /absolute/path/to/data/fashion \
+  --request class6_9 --no-gold --variants C2 --scales 0.5 --passes 1 2 5 \
+  --skip-evaluation --out-dir results/fashion_c_checkpoints
+```
+
+Omit `--skip-evaluation` in Method C to evaluate the baseline and edited models.
+For MNIST use `run_method_a.py` / `run_method_c.py` with MNIST checkpoint/data
+paths. To include Gold in either method, replace `--no-gold` with
+`--gold-dir /absolute/path/to/matched_gold`.
+For CSV-subset forgetting use `run_method_c_subset.py` and its separate guide;
+whole-class Gold is not a matched reference for a subset request.
+
+On Aqua, the four whole-class A/C jobs accept
+`BASELINE_DIR=/absolute/path/to/baseline`, `FASHION_DATA=/absolute/path/to/data`,
+`REQUEST=class6_9`, and `NO_GOLD=1` through `qsub -v`. For a comparison supply
+`GOLD_DIR` and leave `NO_GOLD` unset. These jobs prefer an extracted isolated
+runtime when present: update that runtime after source edits using the packaging
+script, or it may execute older code despite an updated repository `src/`.
+Existing transfer archives are snapshots and are not regenerated automatically.
+
+
+For **Fashion-MNIST Method A unlearning**, including shirt-only deletion and
+shirt/ankle-boot joint deletion on Aqua, see [METHOD_A_FASHION.md](METHOD_A_FASHION.md).
+For Fashion-MNIST C1/C2 replay, see [METHOD_C_FASHION.md](METHOD_C_FASHION.md).
+
 For the Fashion-MNIST/Aqua workflow, start with
 [FASHION_AQUA_RUNBOOK.md](FASHION_AQUA_RUNBOOK.md). It documents the new
 `run_fashion.py` runner, reproducible baseline/Gold splits, CPU checkpoint/resume,
@@ -7,10 +113,9 @@ compiled CPU execution, and bounded CUDA pilots. The older MNIST instructions
 below describe `run_baseline.py` and remain separate.
 
 Course project: importance-based machine unlearning on a Spiking Neural
-Network trained for MNIST digit recognition. This repo currently
-implements **Phase 1: the baseline SNN**, trained with standard STDP.
-Phase 2 (importance-based unlearning) builds on the saved checkpoint
-this phase produces.
+Network trained for MNIST digit recognition. The initial baseline SNN was trained with standard STDP. Method A/C
+unlearning is now implemented as described above; the following sections retain
+the original baseline-development context.
 
 ## Why this architecture / learning rule
 
@@ -133,7 +238,8 @@ performance. Run `python sanity_check.py` to repeat it in your environment;
 `python -m unittest test_baseline.py` checks frozen evaluation and checkpoint
 reload.
 
-**Real MNIST accuracy has not yet been measured** — that requires
+**Historical baseline-development note:** at that stage, real MNIST accuracy
+had not yet been measured. The following original instructions describe
 running `run_baseline.py` on Kaggle (or any machine with internet). Do
 this before your proposal and report the actual number; don't quote the
 Diehl & Cook paper's numbers as if they were yours.
@@ -150,7 +256,7 @@ Diehl & Cook paper's numbers as if they were yours.
   (should look like Fig. 2A of Diehl & Cook / Fig. 4 of ASP once trained
   on real MNIST)
 
-## Next steps (Phase 2 — not yet implemented)
+## Original Phase 2 proposal (historical planning notes)
 
 The importance-based unlearning method described in the project proposal:
 - `Δw_ij(x)` hypothetical STDP updates without applying them (plasticity
