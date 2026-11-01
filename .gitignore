@@ -15,4 +15,12 @@ cython_cache/
 aqua_diagnostics/
 aqua_runs/
 proposal_final_report.pdf
-
+*tar.gz
+*.zip
+gold_weights/
+mnist/
+mnist_sub6_9_p10/
+unlearning/
+fashion/
+fashion_sub6_9_p10*/
+*.tar.gz.sha256
